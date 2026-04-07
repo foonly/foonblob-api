@@ -23,9 +23,9 @@ A decentralized, privacy-focused backend for synchronizing bookmark data across 
 
 ```json
 {
-  "id": "your-sync-id",
-  "data": "base64_encrypted_blob",
-  "timestamp": 1625000000000
+	"id": "your-sync-id",
+	"data": "base64_encrypted_blob",
+	"timestamp": 1625000000000
 }
 ```
 
@@ -38,6 +38,7 @@ A decentralized, privacy-focused backend for synchronizing bookmark data across 
 ### Installation
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/foonly/bookmarks-api.git
    cd bookmarks-api
@@ -63,6 +64,7 @@ go run cmd/api/main.go
 - `-history-limit`: Number of historical versions to retain per ID (default: `10`)
 
 Example with custom flags:
+
 ```bash
 go run cmd/api/main.go -port 9000 -dsn my-bookmarks.db -history-limit 5
 ```
@@ -85,6 +87,7 @@ go test -v ./internal/api/...
 ## Security
 
 The server is designed to be a "zero-knowledge" storage provider. It is the responsibility of the client application to:
+
 1. Generate secure Sync IDs and Keys.
 2. Encrypt the data before `POST`ing.
 3. Decrypt the data after `GET`ing.
@@ -93,4 +96,4 @@ The server never processes or stores the encryption keys.
 
 ## License
 
-[MIT License](LICENSE)
+[GPL-3.0-only](https://opensource.org/licenses/GPL-3.0-only)
