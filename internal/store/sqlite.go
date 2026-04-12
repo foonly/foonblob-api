@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/foonly/foonblob-api/internal/models"
 	_ "modernc.org/sqlite"
@@ -33,12 +34,23 @@ func NewSQLiteStore(dsn string, historyLimit int) (Store, error) {
 	CREATE TABLE IF NOT EXISTS sync_identities (
 		id TEXT PRIMARY KEY,
 		signing_secret TEXT NOT NULL,
-		last_timestamp INTEGER NOT NULL DEFAULT 0
+		last_timestamp INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT 0,
+		last_accessed_at INTEGER NOT NULL DEFAULT 0
 	);
 	`
 	if _, err := db.Exec(query); err != nil {
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
+
+	// Migrations for existing databases
+	_, _ = db.Exec("ALTER TABLE sync_identities ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE sync_identities ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0")
+
+	// Backfill initial values if needed
+	_, _ = db.Exec("UPDATE sync_identities SET created_at = last_timestamp WHERE created_at = 0 AND last_timestamp > 0")
+	_, _ = db.Exec("UPDATE sync_identities SET created_at = strftime('%s', 'now') WHERE created_at = 0")
+	_, _ = db.Exec("UPDATE sync_identities SET last_accessed_at = created_at WHERE last_accessed_at = 0")
 
 	return &sqliteStore{
 		db:           db,
@@ -48,8 +60,8 @@ func NewSQLiteStore(dsn string, historyLimit int) (Store, error) {
 
 func (s *sqliteStore) GetIdentity(ctx context.Context, id string) (*models.SyncIdentity, error) {
 	var identity models.SyncIdentity
-	query := "SELECT id, signing_secret, last_timestamp FROM sync_identities WHERE id = ?"
-	err := s.db.QueryRowContext(ctx, query, id).Scan(&identity.ID, &identity.SigningSecret, &identity.LastTimestamp)
+	query := "SELECT id, signing_secret, last_timestamp, created_at, last_accessed_at FROM sync_identities WHERE id = ?"
+	err := s.db.QueryRowContext(ctx, query, id).Scan(&identity.ID, &identity.SigningSecret, &identity.LastTimestamp, &identity.CreatedAt, &identity.LastAccessedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -60,8 +72,9 @@ func (s *sqliteStore) GetIdentity(ctx context.Context, id string) (*models.SyncI
 }
 
 func (s *sqliteStore) CreateIdentity(ctx context.Context, id string, secret string) error {
-	query := "INSERT INTO sync_identities (id, signing_secret, last_timestamp) VALUES (?, ?, 0)"
-	_, err := s.db.ExecContext(ctx, query, id, secret)
+	now := time.Now().Unix()
+	query := "INSERT INTO sync_identities (id, signing_secret, last_timestamp, created_at, last_accessed_at) VALUES (?, ?, 0, ?, ?)"
+	_, err := s.db.ExecContext(ctx, query, id, secret, now, now)
 	if err != nil {
 		return fmt.Errorf("failed to create identity: %w", err)
 	}
@@ -153,6 +166,84 @@ func (s *sqliteStore) GetBlobAtTimestamp(ctx context.Context, id string, ts int6
 		return nil, err
 	}
 	return &blob, nil
+}
+
+func (s *sqliteStore) UpdateLastAccessed(ctx context.Context, id string) error {
+	query := "UPDATE sync_identities SET last_accessed_at = strftime('%s', 'now') WHERE id = ?"
+	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (s *sqliteStore) GetStats(ctx context.Context) (*models.Stats, error) {
+	stats := &models.Stats{}
+
+	// Totals
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_identities").Scan(&stats.Totals.Identities)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_blobs").Scan(&stats.Totals.Blobs)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM sync_blobs").Scan(&stats.Totals.TotalSizeBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().Unix()
+	day := int64(24 * 60 * 60)
+
+	// Activity
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_identities WHERE created_at > ?", now-day).Scan(&stats.Activity.IdentitiesCreated24h)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_blobs WHERE timestamp > ?", now-day).Scan(&stats.Activity.BlobsCreated24h.Current)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_blobs WHERE timestamp BETWEEN ? AND ?", now-(2*day), now-day).Scan(&stats.Activity.BlobsCreated24h.Previous)
+	if err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
+func (s *sqliteStore) CleanupOldIdentities(ctx context.Context) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Rule 1: < 48h active, > 14 days idle
+	// Rule 2: >= 48h active, > 90 days idle
+	now := time.Now().Unix()
+	query := `
+	DELETE FROM sync_identities
+	WHERE ((last_accessed_at - created_at) < 172800 AND last_accessed_at < ? - 1209600)
+	   OR ((last_accessed_at - created_at) >= 172800 AND last_accessed_at < ? - 7776000)
+	`
+	res, err := tx.ExecContext(ctx, query, now, now)
+	if err != nil {
+		return 0, err
+	}
+
+	deletedCount, _ := res.RowsAffected()
+
+	// Cleanup orphaned blobs
+	_, err = tx.ExecContext(ctx, "DELETE FROM sync_blobs WHERE id NOT IN (SELECT id FROM sync_identities)")
+	if err != nil {
+		return 0, err
+	}
+
+	return deletedCount, tx.Commit()
 }
 
 func (s *sqliteStore) Close() error {

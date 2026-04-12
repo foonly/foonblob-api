@@ -37,6 +37,7 @@ func NewRouter(h *Handler) http.Handler {
 
 	// API Routes
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/stats", h.GetStats)
 		r.Route("/sync", func(r chi.Router) {
 			r.Route("/{id}", func(r chi.Router) {
 				r.Use(limiter.Limit)

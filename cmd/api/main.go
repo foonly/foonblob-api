@@ -31,6 +31,29 @@ func main() {
 	}
 	defer s.Close()
 
+	// Start background cleanup worker
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		// Run once on startup
+		log.Println("Running initial database cleanup...")
+		if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
+			log.Printf("cleanup error: %v", err)
+		} else {
+			log.Printf("cleanup successful: removed %d identities", deleted)
+		}
+
+		for range ticker.C {
+			log.Println("Running scheduled database cleanup...")
+			if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
+				log.Printf("cleanup error: %v", err)
+			} else {
+				log.Printf("cleanup successful: removed %d identities", deleted)
+			}
+		}
+	}()
+
 	// Initialize handlers and router
 	handler := api.NewHandler(s)
 	router := api.NewRouter(handler)

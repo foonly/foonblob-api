@@ -235,3 +235,46 @@ func TestFetchSpecificVersion(t *testing.T) {
 		t.Errorf("expected 'v1', got '%s'", verRes.Data)
 	}
 }
+
+func TestStatsEndpoint(t *testing.T) {
+	router, _ := setupTest(t)
+
+	// Create an identity and upload a blob to have some stats
+	syncID := "stats-test-id"
+	secret := "stats-secret"
+	body, _ := json.Marshal(models.SyncRequest{
+		Data:               "some-data",
+		RegistrationSecret: secret,
+	})
+	ts := time.Now().Unix()
+	sig := signRequest(t, secret, ts, body)
+
+	req := httptest.NewRequest("POST", "/api/v1/sync/"+syncID, bytes.NewBuffer(body))
+	req.Header.Set("X-Sync-Timestamp", fmt.Sprintf("%d", ts))
+	req.Header.Set("X-Sync-Signature", sig)
+	router.ServeHTTP(httptest.NewRecorder(), req)
+
+	// Test GET /api/v1/stats
+	req = httptest.NewRequest("GET", "/api/v1/stats", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	var stats models.Stats
+	if err := json.NewDecoder(rr.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.Totals.Identities != 1 {
+		t.Errorf("expected 1 identity, got %d", stats.Totals.Identities)
+	}
+	if stats.Totals.Blobs != 1 {
+		t.Errorf("expected 1 blob, got %d", stats.Totals.Blobs)
+	}
+	if stats.Activity.IdentitiesCreated24h != 1 {
+		t.Errorf("expected 1 identity created in 24h, got %d", stats.Activity.IdentitiesCreated24h)
+	}
+}

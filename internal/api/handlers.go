@@ -49,6 +49,8 @@ func (h *Handler) GetLatest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = h.store.UpdateLastAccessed(r.Context(), id)
+
 	h.respondWithJSON(w, http.StatusOK, blob)
 }
 
@@ -151,6 +153,8 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = h.store.UpdateLastAccessed(r.Context(), id)
+
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -171,6 +175,8 @@ func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	_ = h.store.UpdateLastAccessed(r.Context(), id)
 
 	h.respondWithJSON(w, http.StatusOK, history)
 }
@@ -196,7 +202,20 @@ func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = h.store.UpdateLastAccessed(r.Context(), id)
+
 	h.respondWithJSON(w, http.StatusOK, blob)
+}
+
+// GetStats handles GET /api/v1/stats
+func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.GetStats(r.Context())
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, stats)
 }
 
 func (h *Handler) respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
