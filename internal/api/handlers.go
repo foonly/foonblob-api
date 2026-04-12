@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/foonly/bookmarks-api/internal/models"
-	"github.com/foonly/bookmarks-api/internal/store"
+	"github.com/foonly/foonblob-api/internal/models"
+	"github.com/foonly/foonblob-api/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 

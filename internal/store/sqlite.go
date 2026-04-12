@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/foonly/bookmarks-api/internal/models"
+	"github.com/foonly/foonblob-api/internal/models"
 	_ "modernc.org/sqlite"
 )
 

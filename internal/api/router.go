@@ -25,7 +25,7 @@ func NewRouter(h *Handler) http.Handler {
 
 	// CORS configuration
 	// In a production environment, you should restrict 'AllowedOrigins'
-	// to the specific domain of your bookmark application.
+	// to the specific domain of your foonblob application.
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},

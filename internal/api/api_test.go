@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/foonly/bookmarks-api/internal/models"
-	"github.com/foonly/bookmarks-api/internal/store"
+	"github.com/foonly/foonblob-api/internal/models"
+	"github.com/foonly/foonblob-api/internal/store"
 )
 
 // setupTest initializes a router with an in-memory SQLite store for testing.

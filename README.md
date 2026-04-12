@@ -1,6 +1,6 @@
-# Bookmark Sync API
+# Foonblob API
 
-A decentralized, privacy-focused backend for synchronizing bookmark data across devices. This service acts as a "dumb" storage vault, storing encrypted blobs for clients without ever seeing the decryption keys.
+A decentralized, privacy-focused backend for synchronizing data across devices. This service acts as a "dumb" storage vault, storing encrypted data for clients without ever seeing the decryption keys.
 
 ## Features
 
@@ -40,8 +40,8 @@ A decentralized, privacy-focused backend for synchronizing bookmark data across 
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/foonly/bookmarks-api.git
-   cd bookmarks-api
+   git clone https://github.com/foonly/foonblob-api.git
+   cd foonblob-api
    ```
 
 2. Download dependencies:
@@ -66,7 +66,7 @@ go run cmd/api/main.go
 Example with custom flags:
 
 ```bash
-go run cmd/api/main.go -port 9000 -dsn my-bookmarks.db -history-limit 5
+go run cmd/api/main.go -port 9000 -dsn my-foonblobs.db -history-limit 5
 ```
 
 ### Running Tests

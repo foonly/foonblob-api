@@ -1,4 +1,4 @@
-name: Bookmarks API build
+name: Foonblob API build
 
 on:
   push:
@@ -19,8 +19,8 @@ jobs:
       - name: Tests
         run: go test -v ./internal/api/...
       - name: Build
-        run: go build -o bin/bookmarks-api cmd/api/main.go
+        run: go build -o bin/foonblob-api cmd/api/main.go
       - name: Create Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "bin/bookmarks-api"
+          artifacts: "bin/foonblob-api"

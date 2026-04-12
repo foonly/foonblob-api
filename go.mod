@@ -1,4 +1,4 @@
-module github.com/foonly/bookmarks-api
+module github.com/foonly/foonblob-api
 
 go 1.26.1
 

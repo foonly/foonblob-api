@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/foonly/bookmarks-api/internal/api"
-	"github.com/foonly/bookmarks-api/internal/store"
+	"github.com/foonly/foonblob-api/internal/api"
+	"github.com/foonly/foonblob-api/internal/store"
 )
 
 func main() {

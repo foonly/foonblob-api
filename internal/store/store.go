@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 
-	"github.com/foonly/bookmarks-api/internal/models"
+	"github.com/foonly/foonblob-api/internal/models"
 )
 
 // ErrNotFound is returned when the requested sync ID or version does not exist.
 var ErrNotFound = errors.New("sync data not found")
 
-// Store defines the interface for persisting encrypted bookmark blobs and their history.
+// Store defines the interface for persisting encrypted foonblobs and their history.
 type Store interface {
 	// GetIdentity retrieves identity information for a sync ID.
 	GetIdentity(ctx context.Context, id string) (*models.SyncIdentity, error)
