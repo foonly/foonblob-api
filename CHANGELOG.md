@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.4.0 (2026-04-12)
+### 0.4.1 (2026-04-13)
+
+#### Performance Improvements
+
+- server: add error logging and optimize SQLite for concurrency (c6dc4d8)
+
+#### Maintenance
+
+- foonver: remove parser setting from foonver.toml (b7ea981)
+
+## v0.4.0 (2026-04-12)
 
 #### Features
 
