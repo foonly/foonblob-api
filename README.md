@@ -96,6 +96,38 @@ To keep the database lean, the API implements a background cleanup worker that r
 - `make fmt`: Format source code.
 - `make tidy`: Update Go dependencies.
 
+### Deployment (systemd)
+
+A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
+
+1. **Create a system user**:
+
+   ```bash
+   sudo useradd -r -s /bin/false foonblob
+   ```
+
+2. **Prepare directories**:
+
+   ```bash
+   sudo mkdir -p /var/lib/foonblob-api
+   sudo chown foonblob:foonblob /var/lib/foonblob-api
+   ```
+
+3. **Install binary & service**:
+
+   ```bash
+   make build
+   sudo cp bin/foonblob-api /usr/local/bin/
+   sudo cp deploy/foonblob-api.service /etc/systemd/system/
+   ```
+
+4. **Configure secrets & Start**:
+   ```bash
+   sudo systemctl edit foonblob-api.service # Add FOONBLOB_SECRET_ENCRYPTION_KEY
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now foonblob-api
+   ```
+
 ## Architecture
 
 - **`cmd/api`**: Server entry point and lifecycle management.
