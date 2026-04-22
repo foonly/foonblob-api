@@ -50,20 +50,18 @@ func NewRouter(h *Handler) http.Handler {
 			r.Use(cors.Handler(cors.Options{
 				AllowedOrigins: []string{"*"},
 				AllowedMethods: []string{"GET", "OPTIONS"},
-				AllowedHeaders: []string{"Accept", "Content-Type"},
+				AllowedHeaders: []string{"Accept", "Content-Type", "Authorization"},
 			}))
 			r.Get("/stats", h.GetStats)
 		})
 
-		r.Route("/sync", func(r chi.Router) {
-			r.Route("/{id}", func(r chi.Router) {
-				r.Use(h.DynamicCORS) // Handles CORS dynamically based on ID
-				r.Use(limiter.Limit)
-				r.Get("/", h.GetLatest)
-				r.Post("/", h.Upload)
-				r.Get("/history", h.GetHistory)
-				r.Get("/{timestamp}", h.GetVersion)
-			})
+		r.Route("/sync/{id}", func(r chi.Router) {
+			r.Use(h.DynamicCORS) // Handles CORS dynamically based on ID
+			r.Use(limiter.Limit)
+			r.Get("/", h.GetLatest)
+			r.Post("/", h.Upload)
+			r.Get("/history", h.GetHistory)
+			r.Get("/{timestamp}", h.GetVersion)
 		})
 	})
 
