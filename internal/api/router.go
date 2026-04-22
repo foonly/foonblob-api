@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -8,6 +9,25 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 )
+
+// SlogLogger is a middleware that logs requests using slog.
+func SlogLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(ww, r)
+
+		slog.Info("request processed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", ww.Status(),
+			"duration", time.Since(start),
+			"remote_ip", r.RemoteAddr,
+			"request_id", middleware.GetReqID(r.Context()),
+		)
+	})
+}
 
 // NewRouter initializes the chi router with common middleware and sync routes.
 func NewRouter(h *Handler) http.Handler {
@@ -19,7 +39,7 @@ func NewRouter(h *Handler) http.Handler {
 	// Standard middleware
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(SlogLogger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 

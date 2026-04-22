@@ -21,6 +21,9 @@ type Store interface {
 	// UpdateLastAccessed updates the last accessed timestamp for an identity.
 	UpdateLastAccessed(ctx context.Context, id string) error
 
+	// UpdateIdentityTimestamp updates the last request timestamp for replay protection.
+	UpdateIdentityTimestamp(ctx context.Context, id string, ts int64) error
+
 	// SaveBlob stores a new encrypted blob for the given ID and handles pruning of old versions.
 	SaveBlob(ctx context.Context, id string, data string, ts int64) error
 

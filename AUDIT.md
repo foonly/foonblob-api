@@ -6,22 +6,22 @@ This document provides a comprehensive audit of the `foonblob-api` project, cove
 
 ### Findings: High Priority
 
-- **CORS Configuration**: The project now implements **Dynamic CORS**. When an identity is registered, its `Origin` is captured (or explicitly provided) and stored. Subsequent requests for that sync ID are restricted to that specific origin via a custom middleware.
-- **Plaintext Secret Storage**: The `signing_secret` (used for HMAC verification) is stored in plaintext in the SQLite database. If the database file is compromised, all user signatures can be forged. _Note: Since this is used for HMAC, the plaintext is required for verification; however, encryption at rest for the database is recommended._
-- **Unauthenticated Read Access**: GET requests to `/api/v1/sync/{id}` do not require a signature or authentication. If a sync ID is leaked or guessed, any party can read the stored blob. While the blob is intended to be client-side encrypted, this still represents a significant privacy risk and potential metadata leak.
+- **CORS Configuration**: [RESOLVED] The project implements **Dynamic CORS**. When an identity is registered, its `Origin` is captured and stored. Subsequent requests for that sync ID are restricted to that specific origin via custom middleware.
+- **Plaintext Secret Storage**: [RESOLVED] The `signing_secret` is now encrypted at rest using **AES-GCM** (with an `enc:` prefix in the database). The encryption key is managed via configuration (`secret_encryption_key`), significantly reducing the risk of identity compromise if the database file is leaked.
+- **Unauthenticated Read Access**: [RESOLVED] All GET requests (`/api/v1/sync/{id}`, `/history`, and versioned lookups) now require a valid **HMAC signature**. Clients must sign the URL path, ensuring that only authorized parties can retrieve blobs.
 
 ### Findings: Medium Priority
 
-- **Public Statistics Endpoint**: The `/api/v1/stats` endpoint is publicly accessible without any authentication. This leaks metadata about the system usage (total identities, blob counts, storage size).
-- **In-Memory Rate Limiting**: The rate limiter is in-memory. If the server restarts, all rate limit buckets are reset. In a multi-node deployment (if ever scaled), rate limits would not be shared.
-- **Rate Limiter Memory Leak**: Resolved. The `RateLimiter` now includes a background cleanup worker that prunes inactive buckets every hour to prevent unbounded memory growth.
-- **Information Leakage in Logs**: The `Logger` middleware is enabled. Ensure that sensitive headers or body content are not logged in production environments.
+- **Public Statistics Endpoint**: [RESOLVED] The `/api/v1/stats` endpoint is now protected by **Bearer token authentication**. Access is denied if `stats_token` is not configured or if the provided token is incorrect.
+- **In-Memory Rate Limiting**: The rate limiter remains in-memory. While suitable for single-node deployments, a distributed store (like Redis) would be required for scaling across multiple instances.
+- **Rate Limiter Memory Leak**: [RESOLVED] The `RateLimiter` includes a background cleanup worker that prunes inactive buckets every hour.
+- **Information Leakage in Logs**: [RESOLVED] Structured logging via `log/slog` is implemented. Request metadata is logged without exposing sensitive payload data or secrets.
 
 ### Findings: Low Priority
 
-- **Timing Attacks**: Signature verification in `handlers.go` uses `hmac.Equal`, which is good as it prevents timing attacks.
-- **Replay Protection**: The system implements a 5-minute window and checks for strictly increasing timestamps. This is a solid implementation for replay protection.
-- **Resource Exhaustion**: `MaxBytesReader` is correctly used to limit upload sizes to 1MB, preventing OOM (Out of Memory) attacks via large payloads.
+- **Timing Attacks**: Signature verification uses `hmac.Equal`, providing constant-time comparison to prevent timing attacks.
+- **Replay Protection**: The system enforces a 5-minute window and requires strictly increasing timestamps for every identity, providing robust protection against replay attacks.
+- **Resource Exhaustion**: `MaxBytesReader` limits upload sizes to 1MB.
 
 ---
 
@@ -29,42 +29,43 @@ This document provides a comprehensive audit of the `foonblob-api` project, cove
 
 ### Code Quality & Architecture
 
-- **Project Structure**: The project follows the standard Go project layout (`cmd/`, `internal/`), which is excellent for maintainability.
-- **Concurrency**: SQLite is correctly configured with `MaxOpenConns(1)` and WAL mode to handle concurrent reads/writes safely.
-- **Error Handling**: Uses Go 1.13+ error wrapping (`%w`) and `errors.Is` for reliable error checking.
-- **Graceful Shutdown**: `main.go` correctly handles `SIGINT` and `SIGTERM` to shut down the HTTP server and close database connections.
-- **Go Version Anomaly**: The `go.mod` file specifies `go 1.26.1`. As of current stable releases (Go 1.24), this version does not exist and should be corrected to a supported version.
+- **Project Structure**: Follows standard Go layout (`cmd/`, `internal/`).
+- **Concurrency**: SQLite uses WAL mode and `MaxOpenConns(1)` for safe concurrent access.
+- **Error Handling**: Consistent use of Go 1.13+ error wrapping.
+- **Graceful Shutdown**: Properly handles OS signals to ensure data integrity during shutdown.
+- **Go Version**: Correctly pinned to a stable version (`1.24.0`).
 
 ### Database Management
 
-- **Ad-hoc Migrations**: Migrations are currently performed using manual `ALTER TABLE` statements in `NewSQLiteStore`. As the schema grows, this will become difficult to manage.
-- **Cleanup Logic**: The background cleanup worker is a good addition for maintaining a slim database.
+- **Migration Tooling**: [RESOLVED] Integrated `goose` for formal database migrations. Schema changes are now versioned and embedded in the binary via `embed.FS`.
+- **Cleanup Logic**: Automated background worker prunes inactive identities and orphaned blobs based on idle-time rules.
 
 ---
 
 ## 3. Actionable Recommendations
 
-### Phase 1: Immediate Security Fixes
+### Phase 1: Immediate Security Fixes (Completed)
 
-- [x] **Restrict CORS**: Implemented Dynamic CORS that locks sync IDs to their registration origin.
-- [x] **Protect Stats**: Added Bearer token authentication via `stats_token` in config.
-- [ ] **Authenticate Reads**: Consider requiring an HMAC signature for GET requests as well, similar to the POST implementation, to prevent unauthorized access to blobs.
+- [x] **Restrict CORS**: Implemented Dynamic CORS locked to registration origins.
+- [x] **Protect Stats**: Added Bearer token authentication.
+- [x] **Authenticate Reads**: Enforced HMAC signatures for all retrieval endpoints.
+- [x] **Encrypt Secrets**: Implemented AES-GCM encryption for signing secrets in the database.
 
-### Phase 2: Architectural Improvements
+### Phase 2: Architectural Improvements (Completed)
 
-- [ ] **Structured Logging**: Replace the standard `log` package with `log/slog` (available in Go 1.21+) to produce JSON logs for better observability.
-- [x] **Configuration Management**: Integrated Viper for YAML/Env configuration.
-- [ ] **Migration Tooling**: Integrate a migration tool like `golang-migrate` or `pressly/goose` to manage database schema versions formally.
-- [x] **Fix Rate Limiter Leak**: Implemented a background cleanup worker in `internal/api/ratelimit.go` that prunes inactive buckets every hour.
-- [x] **Fix Go Version**: Correct the `go.mod` version to a stable release (e.g., `1.24.0`).
+- [x] **Structured Logging**: Migrated to `log/slog` with JSON output.
+- [x] **Configuration Management**: Integrated Viper for TOML and Environment Variable support.
+- [x] **Migration Tooling**: Integrated `goose` for schema management.
+- [x] **Fix Rate Limiter Leak**: Added pruning worker for rate limit buckets.
 
-### Phase 3: Robustness & Scaling
+### Phase 3: Robustness & Scaling (Future)
 
-- [ ] **Request Contexts**: Ensure all database operations strictly respect the `r.Context()` for cancellation, especially for long-running queries (already mostly implemented).
-- [ ] **Database Encryption**: If sensitive data is stored, consider using a SQLite extension like SQLCipher to encrypt the database file at rest.
+- [ ] **Database Encryption**: For environments requiring high-security at rest, consider migrating to a SQLite driver supporting SQLCipher for full-file encryption.
+- [ ] **Distributed Rate Limiting**: If scaling horizontally, migrate the rate limiter state to Redis.
+- [ ] **Audit Logging**: Implement a specific audit log for registration events and failed authentication attempts.
 
 ---
 
 ## Conclusion
 
-The `foonblob-api` is well-structured and implements core security patterns correctly (HMAC, Replay Protection, Body Limits). With the implementation of Dynamic CORS, the risk of cross-origin data leakage is significantly reduced while maintaining flexibility for multiple client applications. Remaining risks are primarily related to the exposure of the stats endpoint and the lack of structured configuration for production environments.
+The `foonblob-api` has been upgraded to a production-ready security posture. By enforcing HMAC signatures for all data access, encrypting secrets at rest, and implementing formal migration and configuration systems, the most critical risks identified in the initial audit have been mitigated. The system now follows modern Go best practices and provides a secure foundation for client-side encrypted data synchronization.

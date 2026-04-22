@@ -4,15 +4,22 @@ A decentralized, privacy-focused backend for synchronizing data across devices. 
 
 ## Features
 
-- **End-to-End Encryption Support**: Designed to store opaque, client-side encrypted blobs (AES-GCM).
-- **History Management**: Automatically retains the last 10 versions of your sync data for easy recovery.
+- **End-to-End Encryption Support**: Designed to store opaque, client-side encrypted blobs.
+- **HMAC Authentication**: All requests (reads and writes) are authenticated using HMAC-SHA256 signatures for zero-knowledge authorization.
+- **Secret Encryption at Rest**: Client signing secrets are encrypted in the database using AES-GCM.
+- **Dynamic CORS**: Sync IDs are locked to the origin that registered them, preventing cross-origin data leakage.
+- **History Management**: Automatically retains the last 10 versions (configurable) of your sync data for easy recovery.
 - **Automated Cleanup**: Built-in logic to remove stale and abandoned data based on usage patterns.
-- **Usage Statistics**: Publicly accessible endpoint to monitor the growth and health of the service.
-- **Rate Limiting**: Built-in protection against abuse with per-ID rate limiting (5 POSTs/min, 30 GETs/min).
+- **Rate Limiting**: Protection against abuse with per-ID rate limiting and background memory pruning.
 - **Lightweight & Portable**: Written in Go with a CGO-free SQLite implementation (`modernc.org/sqlite`).
-- **CORS Ready**: Configured to work with frontend applications out of the box.
+- **Production Ready**: Structured logging, formal migrations (goose), and robust configuration management (Viper).
 
 ## API Specification
+
+All sync endpoints require the following headers for authentication:
+
+- `X-Sync-Timestamp`: Current Unix timestamp (must be within 5 minutes of server time and strictly increasing).
+- `X-Sync-Signature`: HMAC-SHA256 signature of the request content (body for POST, URL path for GET).
 
 ### Sync Endpoints
 
@@ -23,50 +30,34 @@ A decentralized, privacy-focused backend for synchronizing data across devices. 
 
 ### Management Endpoints
 
-- `GET /api/v1/stats`: Retrieve public usage statistics (totals and 24h activity).
+- `GET /api/v1/stats`: Retrieve usage statistics. Requires `Authorization: Bearer <stats_token>`.
 - `GET /health`: Basic health check endpoint.
 
-### Response Format (Sync)
+## Configuration
 
-```json
-{
-	"id": "your-sync-id",
-	"data": "base64_encrypted_blob",
-	"timestamp": 1625000000000
-}
-```
+The API can be configured via `config.toml` or environment variables prefixed with `FOONBLOB_`.
 
-### Response Format (Stats)
-
-```json
-{
-	"totals": {
-		"identities": 1250,
-		"blobs": 5400,
-		"total_size_bytes": 104857600
-	},
-	"activity": {
-		"identities_created_24h": 25,
-		"blobs_created_24h": {
-			"current": 150,
-			"previous": 130
-		}
-	}
-}
-```
+| Variable                | Env Var                          | Default   | Description                          |
+| ----------------------- | -------------------------------- | --------- | ------------------------------------ |
+| `port`                  | `FOONBLOB_PORT`                  | `8080`    | HTTP port to listen on.              |
+| `dsn`                   | `FOONBLOB_DSN`                   | `sync.db` | SQLite database file path.           |
+| `history_limit`         | `FOONBLOB_HISTORY_LIMIT`         | `10`      | Versions to retain per ID.           |
+| `stats_token`           | `FOONBLOB_STATS_TOKEN`           | `""`      | Bearer token for the stats endpoint. |
+| `secret_encryption_key` | `FOONBLOB_SECRET_ENCRYPTION_KEY` | `""`      | Key used to encrypt secrets at rest. |
 
 ## Cleanup Policy
 
 To keep the database lean, the API implements a background cleanup worker that runs every 24 hours. Identities and their associated blobs are deleted based on the following rules:
 
-1.  **Short-term Usage**: If an identity was used for less than 48 hours (from creation to last access) and has been inactive for more than **14 days**, it is deleted.
+1.  **Short-term Usage**: If an identity was used for less than 48 hours and has been inactive for more than **14 days**, it is deleted.
 2.  **Long-term Usage**: If an identity was used for 48 hours or more and has been inactive for more than **90 days**, it is deleted.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.22 or higher
+- Go 1.24 or higher
+- Make
 
 ### Installation
 
@@ -77,55 +68,50 @@ To keep the database lean, the API implements a background cleanup worker that r
    cd foonblob-api
    ```
 
-2. Download dependencies:
+2. Build the binary:
    ```bash
-   go mod download
+   make build
    ```
 
 ### Running the Server
 
-Start the API server with default settings (Port 8080, SQLite database `sync.db`):
+1. Create a `config.toml` (optional, uses defaults otherwise):
 
-```bash
-go run cmd/api/main.go
-```
+   ```toml
+   port = 8080
+   dsn = "sync.db"
+   history_limit = 10
+   stats_token = "your-secure-token"
+   secret_encryption_key = "32-character-secure-key-here"
+   ```
 
-#### Configuration Flags
+2. Start the API:
+   ```bash
+   make run
+   ```
 
-- `-port`: HTTP port to listen on (default: `8080`)
-- `-dsn`: SQLite database connection string (default: `sync.db`)
-- `-history-limit`: Number of historical versions to retain per ID (default: `10`)
+### Development
 
-Example with custom flags:
-
-```bash
-go run cmd/api/main.go -port 9000 -dsn my-foonblobs.db -history-limit 5
-```
-
-### Running Tests
-
-Execute the integration test suite:
-
-```bash
-go test -v ./internal/api/...
-```
+- `make test`: Run the full test suite (uses in-memory SQLite).
+- `make fmt`: Format source code.
+- `make tidy`: Update Go dependencies.
 
 ## Architecture
 
-- **`cmd/api`**: Entry point, server lifecycle, and background cleanup worker.
-- **`internal/api`**: HTTP routing, handlers, and rate-limiting middleware.
-- **`internal/store`**: Persistence layer abstraction and SQLite implementation with automated migrations.
-- **`internal/models`**: Shared data structures.
+- **`cmd/api`**: Server entry point and lifecycle management.
+- **`internal/api`**: HTTP routing, HMAC verification, and rate limiting.
+- **`internal/store`**: SQLite persistence with automated `goose` migrations.
+- **`internal/crypto`**: AES-GCM implementation for encryption at rest.
+- **`internal/config`**: Viper-based configuration management.
 
 ## Security
 
-The server is designed to be a "zero-knowledge" storage provider. It is the responsibility of the client application to:
+Foonblob API implements a multi-layered security model:
 
-1. Generate secure Sync IDs and Keys.
-2. Encrypt the data before `POST`ing.
-3. Decrypt the data after `GET`ing.
-
-The server never processes or stores the encryption keys.
+1. **Zero-Knowledge Data**: All blobs are encrypted client-side. The server never sees the plaintext data.
+2. **Path/Payload Signing**: Every request is signed with a secret known only to the client and the server.
+3. **Origin Locking**: Dynamic CORS ensures that a Sync ID cannot be accessed from an unauthorized domain.
+4. **Encryption at Rest**: Even if the server's database is compromised, the client secrets are protected by an additional layer of AES-GCM encryption.
 
 ## License
 

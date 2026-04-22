@@ -3,20 +3,28 @@ package store
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/foonly/foonblob-api/internal/crypto"
 	"github.com/foonly/foonblob-api/internal/models"
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var embedMigrations embed.FS
 
 type sqliteStore struct {
 	db           *sql.DB
 	historyLimit int
+	encrypter    *crypto.Encrypter
 }
 
-// NewSQLiteStore initializes a new SQLite database and creates the necessary tables.
-func NewSQLiteStore(dsn string, historyLimit int) (Store, error) {
+// NewSQLiteStore initializes a new SQLite database and runs migrations using goose.
+func NewSQLiteStore(dsn string, historyLimit int, encryptionKey string) (Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
@@ -28,61 +36,73 @@ func NewSQLiteStore(dsn string, historyLimit int) (Store, error) {
 		return nil, fmt.Errorf("failed to configure sqlite: %w", err)
 	}
 
-	// Create tables for storing blobs and identities
-	query := `
-	CREATE TABLE IF NOT EXISTS sync_blobs (
-		id TEXT NOT NULL,
-		blob TEXT NOT NULL,
-		timestamp INTEGER NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_sync_id_ts ON sync_blobs (id, timestamp DESC);
-
-	CREATE TABLE IF NOT EXISTS sync_identities (
-		id TEXT PRIMARY KEY,
-		signing_secret TEXT NOT NULL,
-		allowed_origin TEXT NOT NULL DEFAULT '',
-		last_timestamp INTEGER NOT NULL DEFAULT 0,
-		created_at INTEGER NOT NULL DEFAULT 0,
-		last_accessed_at INTEGER NOT NULL DEFAULT 0
-	);
-	`
-	if _, err := db.Exec(query); err != nil {
-		return nil, fmt.Errorf("failed to create table: %w", err)
+	// Run migrations
+	goose.SetBaseFS(embedMigrations)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return nil, fmt.Errorf("failed to set goose dialect: %w", err)
 	}
 
-	// Migrations for existing databases
-	_, _ = db.Exec("ALTER TABLE sync_identities ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
-	_, _ = db.Exec("ALTER TABLE sync_identities ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0")
-	_, _ = db.Exec("ALTER TABLE sync_identities ADD COLUMN allowed_origin TEXT NOT NULL DEFAULT ''")
+	if err := goose.Up(db, "migrations"); err != nil {
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
 
-	// Backfill initial values if needed
-	_, _ = db.Exec("UPDATE sync_identities SET created_at = last_timestamp WHERE created_at = 0 AND last_timestamp > 0")
-	_, _ = db.Exec("UPDATE sync_identities SET created_at = strftime('%s', 'now') WHERE created_at = 0")
-	_, _ = db.Exec("UPDATE sync_identities SET last_accessed_at = created_at WHERE last_accessed_at = 0")
+	var enc *crypto.Encrypter
+	if encryptionKey != "" {
+		var err error
+		enc, err = crypto.NewEncrypter([]byte(encryptionKey))
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize encrypter: %w", err)
+		}
+	}
 
 	return &sqliteStore{
 		db:           db,
 		historyLimit: historyLimit,
+		encrypter:    enc,
 	}, nil
 }
 
 func (s *sqliteStore) GetIdentity(ctx context.Context, id string) (*models.SyncIdentity, error) {
 	var identity models.SyncIdentity
 	query := "SELECT id, signing_secret, allowed_origin, last_timestamp, created_at, last_accessed_at FROM sync_identities WHERE id = ?"
-	err := s.db.QueryRowContext(ctx, query, id).Scan(&identity.ID, &identity.SigningSecret, &identity.AllowedOrigin, &identity.LastTimestamp, &identity.CreatedAt, &identity.LastAccessedAt)
+	err := s.db.QueryRowContext(ctx, query, id).Scan(
+		&identity.ID,
+		&identity.SigningSecret,
+		&identity.AllowedOrigin,
+		&identity.LastTimestamp,
+		&identity.CreatedAt,
+		&identity.LastAccessedAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get identity: %w", err)
 	}
+
+	// Decrypt secret if encryption is enabled and it looks encrypted
+	if s.encrypter != nil && strings.HasPrefix(identity.SigningSecret, "enc:") {
+		decrypted, err := s.encrypter.Decrypt(identity.SigningSecret[4:])
+		if err == nil {
+			identity.SigningSecret = decrypted
+		}
+	}
+
 	return &identity, nil
 }
 
 func (s *sqliteStore) CreateIdentity(ctx context.Context, id string, secret string, origin string) error {
+	var err error
+	if s.encrypter != nil {
+		encrypted, encErr := s.encrypter.Encrypt(secret)
+		if encErr == nil {
+			secret = "enc:" + encrypted
+		}
+	}
+
 	now := time.Now().Unix()
 	query := "INSERT INTO sync_identities (id, signing_secret, allowed_origin, last_timestamp, created_at, last_accessed_at) VALUES (?, ?, ?, 0, ?, ?)"
-	_, err := s.db.ExecContext(ctx, query, id, secret, origin, now, now)
+	_, err = s.db.ExecContext(ctx, query, id, secret, origin, now, now)
 	if err != nil {
 		return fmt.Errorf("failed to create identity: %w", err)
 	}
@@ -109,7 +129,6 @@ func (s *sqliteStore) SaveBlob(ctx context.Context, id string, data string, ts i
 	}
 
 	// Prune old versions: Keep only the latest N versions
-	// Using a subquery to find the timestamps to delete
 	pruneQuery := `
 	DELETE FROM sync_blobs
 	WHERE id = ? AND timestamp NOT IN (
@@ -179,6 +198,12 @@ func (s *sqliteStore) GetBlobAtTimestamp(ctx context.Context, id string, ts int6
 func (s *sqliteStore) UpdateLastAccessed(ctx context.Context, id string) error {
 	query := "UPDATE sync_identities SET last_accessed_at = strftime('%s', 'now') WHERE id = ?"
 	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (s *sqliteStore) UpdateIdentityTimestamp(ctx context.Context, id string, ts int64) error {
+	query := "UPDATE sync_identities SET last_timestamp = ? WHERE id = ?"
+	_, err := s.db.ExecContext(ctx, query, ts, id)
 	return err
 }
 

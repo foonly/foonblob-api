@@ -9,10 +9,11 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Port         int    `mapstructure:"port"`
-	DSN          string `mapstructure:"dsn"`
-	HistoryLimit int    `mapstructure:"history_limit"`
-	StatsToken   string `mapstructure:"stats_token"`
+	Port                int    `mapstructure:"port"`
+	DSN                 string `mapstructure:"dsn"`
+	HistoryLimit        int    `mapstructure:"history_limit"`
+	StatsToken          string `mapstructure:"stats_token"`
+	SecretEncryptionKey string `mapstructure:"secret_encryption_key"`
 }
 
 // Load reads configuration from file or environment variables.
@@ -24,6 +25,7 @@ func Load() (*Config, error) {
 	v.SetDefault("dsn", "sync.db")
 	v.SetDefault("history_limit", 10)
 	v.SetDefault("stats_token", "")
+	v.SetDefault("secret_encryption_key", "")
 
 	// Environment variables
 	v.SetEnvPrefix("FOONBLOB")
