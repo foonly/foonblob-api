@@ -1,0 +1,39 @@
+[Unit]
+Description=Foonblob API Service
+After=network.target
+
+[Service]
+# The user and group the service will run as
+# Recommendation: Create a dedicated system user
+# sudo useradd -r -s /bin/false foonblob
+User=foonblob
+Group=foonblob
+
+# Path to the binary and working directory
+WorkingDirectory=/var/lib/foonblob-api
+ExecStart=/usr/local/bin/foonblob-api
+
+# Environment variables can be used for configuration
+# Alternatively, use /etc/foonblob-api/config.toml
+Environment=FOONBLOB_PORT=8080
+Environment=FOONBLOB_DSN=/var/lib/foonblob-api/sync.db
+# Environment=FOONBLOB_STATS_TOKEN=your-secure-token
+# Environment=FOONBLOB_SECRET_ENCRYPTION_KEY=your-32-char-encryption-key
+
+# Restart policy
+Restart=always
+RestartSec=5
+
+# Security Hardening
+# Prevents the service from seeing most of the file system
+ProtectSystem=full
+# Gives the service its own /tmp
+PrivateTmp=true
+# Prevents the service from gaining new privileges
+NoNewPrivileges=true
+# Restricts access to device nodes
+DeviceAllow=/dev/null rw
+DevicePolicy=closed
+
+[Install]
+WantedBy=multi-user.target

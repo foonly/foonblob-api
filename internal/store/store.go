@@ -16,10 +16,13 @@ type Store interface {
 	GetIdentity(ctx context.Context, id string) (*models.SyncIdentity, error)
 
 	// CreateIdentity stores a new identity with a signing secret.
-	CreateIdentity(ctx context.Context, id string, secret string) error
+	CreateIdentity(ctx context.Context, id string, secret string, origin string) error
 
 	// UpdateLastAccessed updates the last accessed timestamp for an identity.
 	UpdateLastAccessed(ctx context.Context, id string) error
+
+	// UpdateIdentityTimestamp updates the last request timestamp for replay protection.
+	UpdateIdentityTimestamp(ctx context.Context, id string, ts int64) error
 
 	// SaveBlob stores a new encrypted blob for the given ID and handles pruning of old versions.
 	SaveBlob(ctx context.Context, id string, data string, ts int64) error

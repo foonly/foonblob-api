@@ -3,9 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,21 +12,30 @@ import (
 	"time"
 
 	"github.com/foonly/foonblob-api/internal/api"
+	"github.com/foonly/foonblob-api/internal/config"
 	"github.com/foonly/foonblob-api/internal/store"
 )
 
+// Version is set during build time via ldflags
+var Version = "dev"
+
 func main() {
-	var (
-		port         = flag.Int("port", 8080, "HTTP port to listen on")
-		dsn          = flag.String("dsn", "sync.db", "SQLite database connection string")
-		historyLimit = flag.Int("history-limit", 10, "Maximum number of historical versions to keep per ID")
-	)
-	flag.Parse()
+	// Initialize structured logging (slog) with JSON output
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	// Load configuration using Viper
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("failed to load configuration", "error", err)
+		os.Exit(1)
+	}
 
 	// Initialize the persistence layer
-	s, err := store.NewSQLiteStore(*dsn, *historyLimit)
+	s, err := store.NewSQLiteStore(cfg.DSN, cfg.HistoryLimit, cfg.SecretEncryptionKey)
 	if err != nil {
-		log.Fatalf("failed to initialize storage: %v", err)
+		slog.Error("failed to initialize storage", "error", err)
+		os.Exit(1)
 	}
 	defer s.Close()
 
@@ -37,29 +45,30 @@ func main() {
 		defer ticker.Stop()
 
 		// Run once on startup
-		log.Println("Running initial database cleanup...")
+		slog.Info("Running initial database cleanup...")
 		if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
-			log.Printf("cleanup error: %v", err)
+			slog.Error("cleanup error", "error", err)
 		} else {
-			log.Printf("cleanup successful: removed %d identities", deleted)
+			slog.Info("cleanup successful", "deleted_identities", deleted)
 		}
 
 		for range ticker.C {
-			log.Println("Running scheduled database cleanup...")
+			slog.Info("Running scheduled database cleanup...")
 			if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
-				log.Printf("cleanup error: %v", err)
+				slog.Error("cleanup error", "error", err)
 			} else {
-				log.Printf("cleanup successful: removed %d identities", deleted)
+				slog.Info("cleanup successful", "deleted_identities", deleted)
 			}
 		}
 	}()
 
 	// Initialize handlers and router
-	handler := api.NewHandler(s)
-	router := api.NewRouter(handler)
+	handler := api.NewHandler(s, cfg.StatsToken)
+	router, stopLimiter := api.NewRouter(handler)
+	defer stopLimiter()
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", *port),
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		Handler:      router,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -71,20 +80,22 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Starting server on port %d...", *port)
+		slog.Info("Starting server", "port", cfg.Port, "version", Version)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("listen: %s\n", err)
+			slog.Error("listen failure", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-done
-	log.Print("Server stopping...")
+	slog.Info("Server stopping...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server Shutdown Failed:%+v", err)
+		slog.Error("Server Shutdown Failed", "error", err)
+		os.Exit(1)
 	}
-	log.Print("Server exited properly")
+	slog.Info("Server exited properly")
 }

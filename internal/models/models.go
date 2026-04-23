@@ -4,6 +4,7 @@ package models
 type SyncIdentity struct {
 	ID             string `json:"id"`
 	SigningSecret  string `json:"signing_secret"`
+	AllowedOrigin  string `json:"allowed_origin"`
 	LastTimestamp  int64  `json:"last_timestamp"`
 	CreatedAt      int64  `json:"created_at"`
 	LastAccessedAt int64  `json:"last_accessed_at"`
@@ -25,6 +26,7 @@ type SyncHistoryEntry struct {
 type SyncRequest struct {
 	Data               string `json:"data"`
 	RegistrationSecret string `json:"registration_secret,omitempty"`
+	AllowedOrigin      string `json:"allowed_origin,omitempty"`
 }
 
 // Stats represents the usage statistics for the service.

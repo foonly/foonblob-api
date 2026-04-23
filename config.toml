@@ -1,0 +1,14 @@
+# Foonblob API Configuration
+
+# The port the server will listen on
+port = 8080
+
+# SQLite database connection string
+dsn = "sync.db"
+
+# Maximum number of historical versions to keep per sync ID
+history_limit = 10
+
+# Bearer token for accessing the /api/v1/stats endpoint
+# If left empty, access to the endpoint will be denied
+stats_token = ""
