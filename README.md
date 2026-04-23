@@ -56,7 +56,7 @@ To keep the database lean, the API implements a background cleanup worker that r
 
 ### Prerequisites
 
-- Go 1.24 or higher
+- Go 1.25 or higher
 - Make
 
 ### Installation

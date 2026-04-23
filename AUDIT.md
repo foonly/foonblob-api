@@ -33,7 +33,7 @@ This document provides a comprehensive audit of the `foonblob-api` project, cove
 - **Concurrency**: SQLite uses WAL mode and `MaxOpenConns(1)` for safe concurrent access.
 - **Error Handling**: Consistent use of Go 1.13+ error wrapping.
 - **Graceful Shutdown**: Properly handles OS signals to ensure data integrity during shutdown.
-- **Go Version**: Correctly pinned to a stable version (`1.24.0`).
+- **Go Version**: Correctly pinned to a stable version (`1.25.0`).
 
 ### Database Management
 
