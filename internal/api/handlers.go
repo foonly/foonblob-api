@@ -151,7 +151,11 @@ func (h *Handler) GetLatest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update identity timestamp for replay protection and access tracking
-	_ = h.store.UpdateIdentityTimestamp(r.Context(), id, ts)
+	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, ts); err != nil {
+		slog.Error("GetLatest: failed to update identity timestamp", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	_ = h.store.UpdateLastAccessed(r.Context(), id)
 
 	h.respondWithJSON(w, http.StatusOK, blob)
@@ -271,7 +275,11 @@ func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update identity timestamp for replay protection
-	_ = h.store.UpdateIdentityTimestamp(r.Context(), id, ts)
+	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, ts); err != nil {
+		slog.Error("GetHistory: failed to update identity timestamp", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	_ = h.store.UpdateLastAccessed(r.Context(), id)
 
 	h.respondWithJSON(w, http.StatusOK, history)
@@ -317,7 +325,11 @@ func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update identity timestamp for replay protection
-	_ = h.store.UpdateIdentityTimestamp(r.Context(), id, authTs)
+	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, authTs); err != nil {
+		slog.Error("GetVersion: failed to update identity timestamp", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	_ = h.store.UpdateLastAccessed(r.Context(), id)
 
 	h.respondWithJSON(w, http.StatusOK, blob)
