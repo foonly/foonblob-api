@@ -83,27 +83,27 @@ func (s *sqliteStore) GetIdentity(ctx context.Context, id string) (*models.SyncI
 	// Decrypt secret if encryption is enabled and it looks encrypted
 	if s.encrypter != nil && strings.HasPrefix(identity.SigningSecret, "enc:") {
 		decrypted, err := s.encrypter.Decrypt(identity.SigningSecret[4:])
-		if err == nil {
-			identity.SigningSecret = decrypted
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt signing secret (key mismatch or data corruption): %w", err)
 		}
+		identity.SigningSecret = decrypted
 	}
 
 	return &identity, nil
 }
 
 func (s *sqliteStore) CreateIdentity(ctx context.Context, id string, secret string, origin string) error {
-	var err error
 	if s.encrypter != nil {
-		encrypted, encErr := s.encrypter.Encrypt(secret)
-		if encErr == nil {
-			secret = "enc:" + encrypted
+		encrypted, err := s.encrypter.Encrypt(secret)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt signing secret: %w", err)
 		}
+		secret = "enc:" + encrypted
 	}
 
 	now := time.Now().Unix()
 	query := "INSERT INTO sync_identities (id, signing_secret, allowed_origin, last_timestamp, created_at, last_accessed_at) VALUES (?, ?, ?, 0, ?, ?)"
-	_, err = s.db.ExecContext(ctx, query, id, secret, origin, now, now)
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, query, id, secret, origin, now, now); err != nil {
 		return fmt.Errorf("failed to create identity: %w", err)
 	}
 	return nil

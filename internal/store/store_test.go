@@ -63,9 +63,8 @@ func TestSecretEncryption(t *testing.T) {
 			t.Fatalf("failed to create identity in s1: %v", err)
 		}
 
-		// We can't easily swap keys in the same memory DB since they are separate stores,
-		// but we can simulate a restart with a different key by reading the same DSN if it were a file.
-		// For :memory: we just test that GetIdentity returns the encrypted string if decryption fails.
+		// Simulate a key mismatch (e.g. key rotation or misconfiguration) by inserting a row
+		// encrypted with one key into a store configured with a different key.
 
 		s2, err := NewSQLiteStore(":memory:", 10, "different-key")
 		if err != nil {
@@ -79,13 +78,9 @@ func TestSecretEncryption(t *testing.T) {
 			t.Fatalf("failed to insert test row into s2: %v", execErr)
 		}
 
-		ident, err := s2.GetIdentity(ctx, "bad-id")
-		if err != nil {
-			t.Fatalf("GetIdentity failed: %v", err)
-		}
-
-		if ident.SigningSecret != "enc:invalidbase64" {
-			t.Errorf("expected raw encrypted string on decryption failure, got %q", ident.SigningSecret)
+		_, err = s2.GetIdentity(ctx, "bad-id")
+		if err == nil {
+			t.Error("expected error from GetIdentity when decryption fails, got nil")
 		}
 	})
 
