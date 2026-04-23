@@ -25,7 +25,8 @@ func setupTest(t *testing.T) (http.Handler, store.Store) {
 		t.Fatalf("failed to create test store: %v", err)
 	}
 	h := NewHandler(s, "")
-	r := NewRouter(h)
+	r, stop := NewRouter(h)
+	t.Cleanup(stop)
 	return r, s
 }
 
@@ -248,7 +249,8 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 	token := "test-stats-token"
 	h := NewHandler(s, token)
-	router := NewRouter(h)
+	router, stop := NewRouter(h)
+	t.Cleanup(stop)
 
 	// Create an identity and upload a blob to have some stats
 	syncID := "stats-test-id"

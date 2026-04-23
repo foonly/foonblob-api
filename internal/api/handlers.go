@@ -103,11 +103,15 @@ func (h *Handler) verifySignature(r *http.Request, identity *models.SyncIdentity
 		contentToSign = fmt.Sprintf("%d%s", ts, r.URL.Path)
 	}
 
+	sigBytes, err := hex.DecodeString(sigHeader)
+	if err != nil {
+		return 0, errors.New("invalid signature encoding")
+	}
+
 	mac := hmac.New(sha256.New, []byte(identity.SigningSecret))
 	mac.Write([]byte(contentToSign))
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
 
-	if !hmac.Equal([]byte(sigHeader), []byte(expectedSig)) {
+	if !hmac.Equal(sigBytes, mac.Sum(nil)) {
 		return 0, errors.New("invalid signature")
 	}
 

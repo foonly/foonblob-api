@@ -15,6 +15,8 @@ type RateLimiter struct {
 	limits      map[string]*bucket
 	postsPerMin int
 	getsPerMin  int
+	done        chan struct{}
+	stopOnce    sync.Once
 }
 
 type bucket struct {
@@ -28,15 +30,28 @@ func NewRateLimiter(postsPerMin, getsPerMin int) *RateLimiter {
 		limits:      make(map[string]*bucket),
 		postsPerMin: postsPerMin,
 		getsPerMin:  getsPerMin,
+		done:        make(chan struct{}),
 	}
 	go rl.cleanupWorker()
 	return rl
 }
 
+// Stop shuts down the background cleanup goroutine and releases the ticker.
+// It is safe to call Stop more than once.
+func (rl *RateLimiter) Stop() {
+	rl.stopOnce.Do(func() { close(rl.done) })
+}
+
 func (rl *RateLimiter) cleanupWorker() {
 	ticker := time.NewTicker(1 * time.Hour)
-	for range ticker.C {
-		rl.cleanup()
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.cleanup()
+		case <-rl.done:
+			return
+		}
 	}
 }
 

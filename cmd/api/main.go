@@ -64,7 +64,8 @@ func main() {
 
 	// Initialize handlers and router
 	handler := api.NewHandler(s, cfg.StatsToken)
-	router := api.NewRouter(handler)
+	router, stopLimiter := api.NewRouter(handler)
+	defer stopLimiter()
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),

@@ -30,7 +30,9 @@ func SlogLogger(next http.Handler) http.Handler {
 }
 
 // NewRouter initializes the chi router with common middleware and sync routes.
-func NewRouter(h *Handler) http.Handler {
+// The returned stop function must be called on shutdown to release the rate limiter's
+// background goroutine.
+func NewRouter(h *Handler) (http.Handler, func()) {
 	r := chi.NewRouter()
 
 	// Initialize rate limiter: 5 POSTs/min, 30 GETs/min per ID
@@ -72,5 +74,5 @@ func NewRouter(h *Handler) http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	return r
+	return r, limiter.Stop
 }
