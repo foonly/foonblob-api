@@ -10,5 +10,5 @@ dsn = "sync.db"
 history_limit = 10
 
 # Bearer token for accessing the /api/v1/stats endpoint
-# If left empty, the endpoint will be public
+# If left empty, access to the endpoint will be denied
 stats_token = ""
