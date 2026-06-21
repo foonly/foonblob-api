@@ -62,8 +62,12 @@ func main() {
 		}
 	}()
 
+	// Initialize the Hub for WebSockets
+	hub := api.NewHub()
+	go hub.Run()
+
 	// Initialize handlers and router
-	handler := api.NewHandler(s, cfg.StatsToken)
+	handler := api.NewHandler(s, cfg.StatsToken, hub)
 	router, stopLimiter := api.NewRouter(handler)
 	defer stopLimiter()
 

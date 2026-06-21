@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -28,12 +29,14 @@ const (
 type Handler struct {
 	store      store.Store
 	statsToken string
+	hub        *Hub
 }
 
-func NewHandler(s store.Store, statsToken string) *Handler {
+func NewHandler(s store.Store, statsToken string, hub *Hub) *Handler {
 	return &Handler{
 		store:      s,
 		statsToken: statsToken,
+		hub:        hub,
 	}
 }
 
@@ -260,6 +263,11 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Broadcast update to WebSocket clients
+	if h.hub != nil {
+		h.hub.BroadcastUpdate(id, req.Data, ts)
+	}
+
 	_ = h.store.UpdateLastAccessed(r.Context(), id)
 	w.WriteHeader(http.StatusCreated)
 }
@@ -404,6 +412,47 @@ func parseAllowedOrigin(raw string) (string, error) {
 	}
 	// Return canonical form: scheme://host (strips any path, query string, or fragment)
 	return u.Scheme + "://" + u.Host, nil
+}
+
+// ServeWS handles WebSocket connection upgrades
+func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
+	if h.hub == nil {
+		http.Error(w, "websocket hub not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		ip = host
+	}
+
+	// Check IP connection limit (max 32)
+	if h.hub.GetIPCount(ip) >= 32 {
+		slog.Warn("WS: IP connection limit exceeded", "ip", ip)
+		http.Error(w, "too many connections from this IP", http.StatusTooManyRequests)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		slog.Error("WS: failed to upgrade connection", "error", err)
+		return
+	}
+
+	client := &Client{
+		hub:     h.hub,
+		handler: h,
+		conn:    conn,
+		send:    make(chan interface{}, 256),
+		ip:      ip,
+		subs:    make(map[string]bool),
+	}
+	client.hub.register <- client
+
+	// Allow collection of memory referenced by the caller by doing all work in
+	// new goroutines.
+	go client.writePump()
+	go client.readPump()
 }
 
 func (h *Handler) respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {

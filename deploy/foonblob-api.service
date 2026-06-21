@@ -13,12 +13,11 @@ Group=foonblob
 WorkingDirectory=/var/lib/foonblob-api
 ExecStart=/usr/local/bin/foonblob-api
 
-# Environment variables can be used for configuration
-# Alternatively, use /etc/foonblob-api/config.toml
+# Configuration can be provided via Environment, EnvironmentFile, or config.toml.
+# Best Practice: Use 'systemctl edit' or an EnvironmentFile for secrets.
 Environment=FOONBLOB_PORT=8080
 Environment=FOONBLOB_DSN=/var/lib/foonblob-api/sync.db
-# Environment=FOONBLOB_STATS_TOKEN=your-secure-token
-# Environment=FOONBLOB_SECRET_ENCRYPTION_KEY=your-32-char-encryption-key
+# EnvironmentFile=/etc/foonblob-api/secrets.env
 
 # Restart policy
 Restart=always

@@ -6,7 +6,7 @@ A decentralized, privacy-focused backend for synchronizing data across devices. 
 
 - **End-to-End Encryption Support**: Designed to store opaque, client-side encrypted blobs.
 - **HMAC Authentication**: All requests (reads and writes) are authenticated using HMAC-SHA256 signatures for zero-knowledge authorization.
-- **Secret Encryption at Rest**: Client signing secrets are encrypted in the database using AES-GCM.
+- **Secret Encryption at Rest**: Client signing secrets are encrypted in the database using AES-GCM (requires configuration).
 - **Dynamic CORS**: Sync IDs are locked to the origin that registered them, preventing cross-origin data leakage.
 - **History Management**: Automatically retains the last 10 versions (configurable) of your sync data for easy recovery.
 - **Automated Cleanup**: Built-in logic to remove stale and abandoned data based on usage patterns.
@@ -37,13 +37,13 @@ All sync endpoints require the following headers for authentication:
 
 The API can be configured via `config.toml` or environment variables prefixed with `FOONBLOB_`.
 
-| Variable                | Env Var                          | Default   | Description                          |
-| ----------------------- | -------------------------------- | --------- | ------------------------------------ |
-| `port`                  | `FOONBLOB_PORT`                  | `8080`    | HTTP port to listen on.              |
-| `dsn`                   | `FOONBLOB_DSN`                   | `sync.db` | SQLite database file path.           |
-| `history_limit`         | `FOONBLOB_HISTORY_LIMIT`         | `10`      | Versions to retain per ID.           |
-| `stats_token`           | `FOONBLOB_STATS_TOKEN`           | `""`      | Bearer token for the stats endpoint. |
-| `secret_encryption_key` | `FOONBLOB_SECRET_ENCRYPTION_KEY` | `""`      | Key used to encrypt secrets at rest. |
+| Variable                | Env Var                          | Default   | Description                                                            |
+| ----------------------- | -------------------------------- | --------- | ---------------------------------------------------------------------- |
+| `port`                  | `FOONBLOB_PORT`                  | `8080`    | HTTP port to listen on.                                                |
+| `dsn`                   | `FOONBLOB_DSN`                   | `sync.db` | SQLite database file path.                                             |
+| `history_limit`         | `FOONBLOB_HISTORY_LIMIT`         | `10`      | Versions to retain per ID.                                             |
+| `stats_token`           | `FOONBLOB_STATS_TOKEN`           | `""`      | Bearer token for the stats endpoint.                                   |
+| `secret_encryption_key` | `FOONBLOB_SECRET_ENCRYPTION_KEY` | `""`      | Key for encryption at rest. If empty, secrets are stored in plaintext. |
 
 ## Cleanup Policy
 
@@ -123,7 +123,9 @@ A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
 
 4. **Configure secrets & Start**:
    ```bash
-   sudo systemctl edit foonblob-api.service # Add FOONBLOB_SECRET_ENCRYPTION_KEY
+   # Use an override file to securely provide secrets (Environment=FOONBLOB_...)
+   sudo systemctl edit foonblob-api.service
+
    sudo systemctl daemon-reload
    sudo systemctl enable --now foonblob-api
    ```
@@ -143,7 +145,7 @@ Foonblob API implements a multi-layered security model:
 1. **Zero-Knowledge Data**: All blobs are encrypted client-side. The server never sees the plaintext data.
 2. **Path/Payload Signing**: Every request is signed with a secret known only to the client and the server.
 3. **Origin Locking**: Dynamic CORS ensures that a Sync ID cannot be accessed from an unauthorized domain.
-4. **Encryption at Rest**: Even if the server's database is compromised, the client secrets are protected by an additional layer of AES-GCM encryption.
+4. **Encryption at Rest**: When configured, client secrets are protected by an additional layer of AES-GCM encryption, protecting them even if the database is compromised.
 
 ## License
 

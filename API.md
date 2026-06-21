@@ -161,6 +161,64 @@ Requires `Authorization: Bearer <stats_token>`.
 
 Returns `200 OK` with body `ok` if the service is running.
 
+### WebSocket Update Subscription
+
+`GET /api/v1/ws`
+
+Upgrades the connection to a WebSocket for real-time blob update notifications.
+
+**Communication Protocol:**
+
+All messages are JSON-encoded.
+
+#### Client Messages
+
+**Subscribe:**
+
+```json
+{
+	"type": "subscribe",
+	"id": "sync-id",
+	"timestamp": 1713820500,
+	"signature": "hmac-sha256-signature"
+}
+```
+
+- `signature`: HMAC-SHA256 of `timestamp + "subscribe" + id` using the `SigningSecret`.
+
+**Unsubscribe:**
+
+```json
+{
+	"type": "unsubscribe",
+	"id": "sync-id"
+}
+```
+
+#### Server Messages
+
+**Update Notification:**
+Sent immediately upon successful subscription and whenever the blob is updated.
+
+```json
+{
+	"type": "update",
+	"id": "sync-id",
+	"data": "base64_encrypted_blob",
+	"timestamp": 1713820600
+}
+```
+
+**Error:**
+
+```json
+{
+	"type": "error",
+	"message": "reason for failure",
+	"code": 401
+}
+```
+
 ---
 
 ## 4. Error Handling
@@ -217,4 +275,9 @@ The default server configuration applies the following limits per Sync ID:
 - **Writes**: 5 requests per minute.
 - **Reads**: 30 requests per minute.
 
-Exceeding these will result in `429 Too Many Requests`.
+Additionally, WebSocket connections are limited:
+
+- **Connections per IP**: 32 concurrent connections.
+- **Subscriptions per connection**: 32 active sync IDs.
+
+Exceeding these will result in `429 Too Many Requests` (or a WebSocket error message).

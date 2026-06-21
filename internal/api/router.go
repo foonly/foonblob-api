@@ -47,6 +47,8 @@ func NewRouter(h *Handler) (http.Handler, func()) {
 
 	// API Routes
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/ws", h.ServeWS)
+
 		// Public Stats with standard CORS
 		r.Group(func(r chi.Router) {
 			r.Use(cors.Handler(cors.Options{
