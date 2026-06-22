@@ -272,7 +272,7 @@ async function foonblobRequest(method, path, secret, body = null) {
 
 The default server configuration applies the following limits per Sync ID:
 
-- **Writes**: 5 requests per minute.
+- **Writes**: 15 requests per minute.
 - **Reads**: 30 requests per minute.
 
 Additionally, WebSocket connections are limited:

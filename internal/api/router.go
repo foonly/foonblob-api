@@ -35,8 +35,8 @@ func SlogLogger(next http.Handler) http.Handler {
 func NewRouter(h *Handler) (http.Handler, func()) {
 	r := chi.NewRouter()
 
-	// Initialize rate limiter: 5 POSTs/min, 30 GETs/min per ID
-	limiter := NewRateLimiter(5, 30)
+	// Initialize rate limiter: 15 POSTs/min, 30 GETs/min per ID
+	limiter := NewRateLimiter(15, 30)
 
 	// Standard middleware
 	r.Use(middleware.RequestID)

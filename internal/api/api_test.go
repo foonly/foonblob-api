@@ -24,7 +24,7 @@ func setupTest(t *testing.T) (http.Handler, store.Store) {
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
-	h := NewHandler(s, "")
+	h := NewHandler(s, "", nil)
 	r, stop := NewRouter(h)
 	t.Cleanup(stop)
 	return r, s
@@ -426,7 +426,7 @@ func TestStatsEndpoint(t *testing.T) {
 		t.Fatalf("failed to create test store: %v", err)
 	}
 	token := "test-stats-token"
-	h := NewHandler(s, token)
+	h := NewHandler(s, token, nil)
 	router, stop := NewRouter(h)
 	t.Cleanup(stop)
 
