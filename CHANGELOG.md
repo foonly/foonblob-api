@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.5.0 (2026-06-19)
+## 0.6.0 (2026-06-23)
+
+#### Features
+
+- api: implement WebSocket support for real-time updates (b37c650)
+
+#### Bug Fixes
+
+- api: increase write rate limit (1bc6fee)
+
+## v0.5.0 (2026-06-19)
 
 #### Features
 
