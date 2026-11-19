@@ -110,17 +110,9 @@ To keep the database lean, the API implements a background cleanup worker that r
 
 ### Deployment (systemd)
 
-A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
+A sample service file is provided in `deploy/foonblob-api.service`. It runs the service under a systemd `DynamicUser` (no system user to create) with its data in `/var/lib/foonblob-api`.
 
-1. **Create a system user**:
-
-   ```bash
-   sudo useradd -r -s /usr/sbin/nologin foonblob
-   ```
-
-   The data directory `/var/lib/foonblob-api` is created by systemd (`StateDirectory=`).
-
-2. **Install binary & service** (or download `foonblob-api` from a GitHub release and check it against `foonblob-api.sha256`):
+1. **Install binary & service** (or download `foonblob-api` from a GitHub release and check it against `foonblob-api.sha256`):
 
    ```bash
    make build
@@ -128,7 +120,7 @@ A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
    sudo install -m 0644 deploy/foonblob-api.service /etc/systemd/system/
    ```
 
-3. **Configure secrets** in a root-only file (not via `Environment=` lines, which any local user can read with `systemctl show`):
+2. **Configure secrets** in a root-only file (not via `Environment=` lines, which any local user can read with `systemctl show`):
 
    ```bash
    sudo install -d -m 0755 /etc/foonblob-api
@@ -138,9 +130,9 @@ A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
    # FOONBLOB_SECRET_ENCRYPTION_KEY=...
    ```
 
-   Non-secret settings can go in `/etc/foonblob-api/config.toml`. If the service sits behind a reverse proxy on the same host, set `FOONBLOB_HOST=127.0.0.1`; if it is exposed directly, set `FOONBLOB_TRUST_PROXY_HEADERS=false`.
+   Non-secret settings can go in `/etc/foonblob-api/config.toml` or a drop-in (`systemctl edit foonblob-api`). If the service sits behind a reverse proxy on the same host, set `FOONBLOB_HOST=127.0.0.1`; if it is exposed directly, set `FOONBLOB_TRUST_PROXY_HEADERS=false`. Behind nginx, clear the header a client could spoof: `proxy_set_header True-Client-IP "";` alongside `proxy_set_header X-Real-IP $remote_addr;`.
 
-4. **Start**:
+3. **Start**:
 
    ```bash
    sudo systemctl daemon-reload
@@ -148,7 +140,17 @@ A sample service file is provided in `deploy/foonblob-api.service`. To deploy:
    journalctl -u foonblob-api -f
    ```
 
-5. **Upgrade**: replace the binary and `sudo systemctl restart foonblob-api`. Migrations run automatically on startup. Back up `/var/lib/foonblob-api/sync.db` first (e.g. `sqlite3 sync.db ".backup sync.db.bak"`).
+Migrations run automatically on startup. Back up the database before upgrading (e.g. `sqlite3 /var/lib/foonblob-api/foonblob.db ".backup /var/backups/foonblob.db"`).
+
+### Continuous deployment
+
+Pushing a `v*` tag builds a release and, if the repository has a `production` environment configured, deploys it:
+
+- On the server, releases live in `/opt/foonblob-api/releases/<version>`, `/opt/foonblob-api/current` points at the active one and `/usr/local/bin/foonblob-api` links to `current/foonblob-api`.
+- `deploy/foonblob-deploy` is installed as `/usr/local/sbin/foonblob-deploy` and bound to the CI key as a forced command (`command="/usr/local/sbin/foonblob-deploy",restrict ssh-ed25519 ...`) for a deploy user that owns `/opt/foonblob-api` and may run `sudo systemctl restart foonblob-api.service`. It verifies the checksum and version, switches `current`, restarts, checks `/health` and rolls back on failure. Set `HEALTH_URL` in `/etc/foonblob-api/deploy.conf` if the port is not 8080.
+- Repository settings: secret `SSH_KEY`, variables `DEPLOY_HOST`, `DEPLOY_USER`, `KNOWN_HOSTS` and `PUBLIC_URL` (e.g. `https://blob.example.com`).
+
+`/health` reports the running version in the `X-Foonblob-Version` header, and `foonblob-api -version` prints it.
 
 ## Architecture
 

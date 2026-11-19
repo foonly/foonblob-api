@@ -32,3 +32,42 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: "bin/foonblob-api,bin/foonblob-api.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foonblob-api
+          path: bin/
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Deploys only when the repository is configured for it.
+    if: ${{ vars.DEPLOY_HOST != '' }}
+    environment: production
+    concurrency: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: foonblob-api
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_KEY }}
+          name: id_ed25519
+          known_hosts: ${{ vars.KNOWN_HOSTS }}
+      - name: Deploy
+        # The key is bound to a forced command on the server (deploy/foonblob-deploy)
+        # that verifies the checksum and version, switches the release, restarts the
+        # service and rolls back if the health check fails.
+        run: |
+          sha=$(cut -d' ' -f1 foonblob-api.sha256)
+          ssh "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" "${GITHUB_REF_NAME} ${sha}" < foonblob-api
+      - name: Verify public endpoint
+        run: |
+          for i in $(seq 10); do
+            v=$(curl -fsS -D - -o /dev/null "${{ vars.PUBLIC_URL }}/health" | tr -d '\r' |
+              awk -F': ' 'tolower($1)=="x-foonblob-version" {print $2}') || true
+            [ "v$v" = "${GITHUB_REF_NAME}" ] && { echo "live: v$v"; exit 0; }
+            sleep 3
+          done
+          echo "public endpoint reports '${v:-nothing}', expected ${GITHUB_REF_NAME}"; exit 1

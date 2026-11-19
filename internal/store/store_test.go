@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -185,4 +186,36 @@ func TestStoreGuards(t *testing.T) {
 			t.Fatal("expected startup error when encrypted secrets exist but no key is configured")
 		}
 	})
+}
+
+func TestPlaintextSecretsEncryptedOnStartup(t *testing.T) {
+	ctx := context.Background()
+	dsn := "file:" + t.TempDir() + "/plain.db"
+
+	s, err := NewSQLiteStore(dsn, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(ctx, "id", "plain-secret", "", "blob", 1); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s, err = NewSQLiteStore(dsn, 10, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	var raw string
+	if err := s.(*sqliteStore).db.QueryRow("SELECT signing_secret FROM sync_identities WHERE id = 'id'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(raw, "enc:") {
+		t.Fatalf("expected secret to be encrypted at startup, got %q", raw)
+	}
+	identity, err := s.GetIdentity(ctx, "id")
+	if err != nil || identity.SigningSecret != "plain-secret" {
+		t.Fatalf("got %+v, %v", identity, err)
+	}
 }

@@ -10,6 +10,9 @@ import (
 	"github.com/go-chi/cors"
 )
 
+// Version is reported in the X-Foonblob-Version header of /health. Set by main.
+var Version = "dev"
+
 // SlogLogger is a middleware that logs requests using slog.
 func SlogLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +80,7 @@ func NewRouter(h *Handler, trustProxyHeaders bool) (http.Handler, func()) {
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("X-Foonblob-Version", Version)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})

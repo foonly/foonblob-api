@@ -1,0 +1,88 @@
+#!/bin/bash
+# Receives a foonblob-api release over SSH, activates it and rolls back on failure.
+#
+# Install as /usr/local/sbin/foonblob-deploy and bind it to the CI key as a forced
+# command in the deploy user's authorized_keys:
+#
+#   command="/usr/local/sbin/foonblob-deploy",restrict ssh-ed25519 AAAA... foonblob-api CI
+#
+# CI then runs:   ssh deploy@host "v1.2.3 <sha256>" < foonblob-api
+#
+# Requirements: the deploy user owns $BASE, /usr/local/bin/foonblob-api is a symlink
+# to $BASE/current/foonblob-api, and sudoers allows the deploy user to run
+# "/usr/bin/systemctl restart foonblob-api.service".
+set -euo pipefail
+
+BASE=${FOONBLOB_DEPLOY_BASE:-/opt/foonblob-api}
+SERVICE=foonblob-api.service
+# Overridable for local testing only; SSH forced commands do not accept client env.
+RESTART=${FOONBLOB_DEPLOY_RESTART:-sudo -n /usr/bin/systemctl restart $SERVICE}
+HEALTH_URL=http://127.0.0.1:8080/health
+KEEP=5
+MAX_SIZE=104857600 # 100 MiB
+# Optional overrides (e.g. HEALTH_URL) live here:
+[ -r /etc/foonblob-api/deploy.conf ] && . /etc/foonblob-api/deploy.conf
+
+log() { echo "foonblob-deploy: $*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+read -r version sha extra <<<"${SSH_ORIGINAL_COMMAND:-}" || true
+[[ "${version:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: \"vX.Y.Z <sha256>\" < binary"
+[[ "${sha:-}" =~ ^[0-9a-f]{64}$ ]] || die "invalid sha256"
+[ -z "${extra:-}" ] || die "unexpected arguments"
+
+mkdir -p "$BASE/releases"
+exec 9>"$BASE/.deploy.lock"
+flock -n 9 || die "another deploy is in progress"
+
+# Receive and verify the binary before touching anything that is live.
+tmp=$(mktemp -d "$BASE/releases/.incoming.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+head -c "$MAX_SIZE" >"$tmp/foonblob-api"
+echo "$sha  $tmp/foonblob-api" | sha256sum -c --quiet - || die "checksum mismatch"
+chmod 0755 "$tmp/foonblob-api"
+got=$("$tmp/foonblob-api" -version) || die "binary does not run"
+[ "v$got" = "$version" ] || die "binary reports version $got, expected $version"
+
+dir="$BASE/releases/$version"
+prev=""
+[ -L "$BASE/current" ] && prev=$(readlink -f "$BASE/current")
+[ "$prev" != "$dir" ] || die "$version is already active"
+rm -rf "$dir"
+mv "$tmp" "$dir"
+trap - EXIT
+
+activate() {
+	ln -sfn "$1" "$BASE/current.new"
+	mv -T "$BASE/current.new" "$BASE/current"
+	$RESTART 9>&- # do not leak the deploy lock into the service
+}
+
+healthy() {
+	local want=$1 v
+	for _ in $(seq 30); do
+		v=$(curl -fsS -m 2 -o /dev/null -D - "$HEALTH_URL" 2>/dev/null |
+			tr -d '\r' | awk -F': ' 'tolower($1)=="x-foonblob-version" {print $2}') || true
+		[ "$v" = "$want" ] && return 0
+		sleep 1
+	done
+	return 1
+}
+
+log "activating $version (previous: ${prev:-none})"
+activate "$dir"
+if ! healthy "${version#v}"; then
+	if [ -n "$prev" ] && [ -d "$prev" ]; then
+		log "health check failed, rolling back to $prev"
+		activate "$prev"
+		healthy "$("$prev/foonblob-api" -version)" || log "WARNING: rollback is not healthy either"
+	fi
+	die "$version failed its health check"
+fi
+log "$version is live"
+
+# Keep the newest $KEEP releases, never deleting the active one.
+cd "$BASE/releases"
+ls -1dt v*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+	[ "$(readlink -f "$old")" = "$(readlink -f "$BASE/current")" ] || rm -rf -- "$old"
+done

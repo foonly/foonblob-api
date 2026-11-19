@@ -94,11 +94,62 @@ func NewSQLiteStore(dsn string, historyLimit int, encryptionKey string) (_ Store
 		}
 	}
 
-	return &sqliteStore{
+	s := &sqliteStore{
 		db:           db,
 		historyLimit: historyLimit,
 		encrypter:    enc,
-	}, nil
+	}
+	if enc != nil {
+		n, err := s.encryptPlaintextSecrets(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt existing signing secrets: %w", err)
+		}
+		if n > 0 {
+			slog.Info("encrypted plaintext signing secrets at rest", "count", n)
+		}
+	}
+	return s, nil
+}
+
+// encryptPlaintextSecrets encrypts any signing secrets still stored in plaintext,
+// e.g. identities registered before an encryption key was configured or imported
+// from elsewhere.
+func (s *sqliteStore) encryptPlaintextSecrets(ctx context.Context) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, "SELECT id, signing_secret FROM sync_identities WHERE signing_secret NOT LIKE 'enc:%'")
+	if err != nil {
+		return 0, err
+	}
+	type row struct{ id, secret string }
+	var plain []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.secret); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		plain = append(plain, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	for _, r := range plain {
+		encrypted, err := s.encrypter.Encrypt(r.secret)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE sync_identities SET signing_secret = ? WHERE id = ?", encPrefix+encrypted, r.id); err != nil {
+			return 0, err
+		}
+	}
+	return len(plain), tx.Commit()
 }
 
 func (s *sqliteStore) GetIdentity(ctx context.Context, id string) (*models.SyncIdentity, error) {

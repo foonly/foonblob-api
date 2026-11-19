@@ -4,11 +4,9 @@ After=network.target
 
 [Service]
 Type=exec
-# Dedicated system user (see README: useradd -r -s /usr/sbin/nologin foonblob)
-User=foonblob
-Group=foonblob
-
-# systemd creates /var/lib/foonblob-api owned by the service user.
+# systemd allocates a throwaway UID for the service (never shared with other users
+# or containers) and creates /var/lib/foonblob-api owned by it.
+DynamicUser=yes
 StateDirectory=foonblob-api
 StateDirectoryMode=0750
 WorkingDirectory=/var/lib/foonblob-api

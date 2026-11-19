@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +23,13 @@ import (
 var Version = "dev"
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(Version)
+		return
+	}
+
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	if err := run(); err != nil {
@@ -59,6 +68,7 @@ func run() error {
 
 	hub := api.NewHub()
 	handler := api.NewHandler(s, cfg.StatsToken, hub)
+	api.Version = Version
 	router, stopLimiter := api.NewRouter(handler, cfg.TrustProxyHeaders)
 	defer stopLimiter()
 
