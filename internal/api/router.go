@@ -30,9 +30,12 @@ func SlogLogger(next http.Handler) http.Handler {
 }
 
 // NewRouter initializes the chi router with common middleware and sync routes.
+// trustProxyHeaders controls whether X-Forwarded-For / X-Real-IP / True-Client-IP
+// are used as the client IP; enable it only when running behind a reverse proxy
+// that sets those headers, otherwise clients can spoof their IP.
 // The returned stop function must be called on shutdown to release the rate limiter's
 // background goroutine.
-func NewRouter(h *Handler) (http.Handler, func()) {
+func NewRouter(h *Handler, trustProxyHeaders bool) (http.Handler, func()) {
 	r := chi.NewRouter()
 
 	// Initialize rate limiter: 15 POSTs/min, 30 GETs/min per ID
@@ -40,10 +43,12 @@ func NewRouter(h *Handler) (http.Handler, func()) {
 
 	// Standard middleware
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	if trustProxyHeaders {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(SlogLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(middleware.Timeout(30 * time.Second))
 
 	// API Routes
 	r.Route("/api/v1", func(r chi.Router) {

@@ -1,20 +1,14 @@
 package api
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
-	"time"
 
 	"github.com/foonly/foonblob-api/internal/models"
 	"github.com/foonly/foonblob-api/internal/store"
@@ -22,8 +16,11 @@ import (
 )
 
 const (
-	// MaxPayloadSize defines the maximum allowed size for the encrypted blob (1MB)
+	// MaxPayloadSize defines the maximum allowed size for the request body (1MB).
 	MaxPayloadSize = 1024 * 1024
+
+	// MaxIDLength bounds the length of newly registered sync IDs.
+	MaxIDLength = 256
 )
 
 type Handler struct {
@@ -50,21 +47,17 @@ func (h *Handler) DynamicCORS(next http.Handler) http.Handler {
 			identity, err := h.store.GetIdentity(r.Context(), id)
 			if err == nil && identity.AllowedOrigin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", identity.AllowedOrigin)
-				w.Header().Set("Vary", "Origin")
+				w.Header().Add("Vary", "Origin")
 
 				// Server-side enforcement: CORS headers alone only prevent browsers
 				// from reading responses; they do not stop the request from being made.
-				// When a client sends an Origin header and the identity has a registered
-				// AllowedOrigin, reject any mismatch outright. Requests without an Origin
-				// header (e.g. native/CLI clients) are still allowed — they are already
-				// authenticated by the HMAC signature.
-				if reqOrigin := r.Header.Get("Origin"); reqOrigin != "" && reqOrigin != identity.AllowedOrigin {
+				if !originAllowed(r.Header.Get("Origin"), identity.AllowedOrigin) {
 					http.Error(w, "origin not allowed", http.StatusForbidden)
 					return
 				}
 			} else {
-				// Fallback to allow all if no specific origin is registered
-				// or during registration phase.
+				// No origin restriction registered (or the ID does not exist yet,
+				// i.e. the registration request itself).
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 		}
@@ -81,81 +74,66 @@ func (h *Handler) DynamicCORS(next http.Handler) http.Handler {
 	})
 }
 
-// verifySignature handles the common signature verification logic for all sync endpoints.
-// For POST requests, it hashes the body. For GET requests, it hashes the URL path.
-func (h *Handler) verifySignature(r *http.Request, identity *models.SyncIdentity, bodyBytes []byte) (int64, error) {
-	// 1. Validate Timestamp Header
-	tsHeader := r.Header.Get("X-Sync-Timestamp")
-	ts, err := strconv.ParseInt(tsHeader, 10, 64)
+// verifySignature authenticates a sync request against an identity.
+// For POST requests the signature covers the SHA-256 of the body; for GET
+// requests it covers the URL path.
+func verifySignature(r *http.Request, identity *models.SyncIdentity, body []byte) (int64, error) {
+	ts, err := strconv.ParseInt(r.Header.Get("X-Sync-Timestamp"), 10, 64)
 	if err != nil {
 		return 0, errors.New("invalid or missing X-Sync-Timestamp")
 	}
 
-	// 2. Check Timestamp Window (5 minutes)
-	now := time.Now().Unix()
-	if math.Abs(float64(now-ts)) > 300 {
-		return 0, errors.New("timestamp expired or invalid")
+	content := r.URL.Path
+	if r.Method == http.MethodPost {
+		content = sha256Hex(body)
 	}
 
-	// 3. Replay Protection
-	if ts <= identity.LastTimestamp {
-		return 0, errors.New("timestamp must be newer than previous request")
+	if err := authenticate(identity.SigningSecret, identity.LastTimestamp, ts, content, r.Header.Get("X-Sync-Signature")); err != nil {
+		if errors.Is(err, errMissingSig) {
+			return 0, errors.New("missing X-Sync-Signature")
+		}
+		return 0, err
 	}
-
-	// 4. Signature Verification
-	sigHeader := r.Header.Get("X-Sync-Signature")
-	if sigHeader == "" {
-		return 0, errors.New("missing X-Sync-Signature")
-	}
-
-	var contentToSign string
-	if r.Method == http.MethodPost && bodyBytes != nil {
-		hasher := sha256.New()
-		hasher.Write(bodyBytes)
-		bodyHash := hex.EncodeToString(hasher.Sum(nil))
-		contentToSign = fmt.Sprintf("%d%s", ts, bodyHash)
-	} else {
-		// For GET (or body-less requests), sign the path to tie the signature to the resource
-		contentToSign = fmt.Sprintf("%d%s", ts, r.URL.Path)
-	}
-
-	sigBytes, err := hex.DecodeString(sigHeader)
-	if err != nil {
-		return 0, errors.New("invalid signature encoding")
-	}
-
-	mac := hmac.New(sha256.New, []byte(identity.SigningSecret))
-	mac.Write([]byte(contentToSign))
-
-	if !hmac.Equal(sigBytes, mac.Sum(nil)) {
-		return 0, errors.New("invalid signature")
-	}
-
 	return ts, nil
+}
+
+// authorizeRead looks up the identity, verifies the request signature and atomically
+// consumes the request timestamp. It writes an error response and returns false on
+// failure.
+func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, id, op string) bool {
+	identity, err := h.store.GetIdentity(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "sync id not found", http.StatusNotFound)
+			return false
+		}
+		slog.Error(op+": failed to get identity", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return false
+	}
+
+	ts, err := verifySignature(r, identity, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return false
+	}
+
+	if err := h.store.Touch(r.Context(), id, ts); err != nil {
+		if errors.Is(err, store.ErrStaleTimestamp) {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return false
+		}
+		slog.Error(op+": failed to update identity timestamp", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return false
+	}
+	return true
 }
 
 // GetLatest handles GET /api/v1/sync/:id
 func (h *Handler) GetLatest(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "missing sync id", http.StatusBadRequest)
-		return
-	}
-
-	identity, err := h.store.GetIdentity(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, "sync id not found", http.StatusNotFound)
-			return
-		}
-		slog.Error("GetLatest: failed to get identity", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	ts, err := h.verifySignature(r, identity, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	if !h.authorizeRead(w, r, id, "GetLatest") {
 		return
 	}
 
@@ -170,30 +148,23 @@ func (h *Handler) GetLatest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update identity timestamp for replay protection and access tracking
-	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, ts); err != nil {
-		slog.Error("GetLatest: failed to update identity timestamp", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	_ = h.store.UpdateLastAccessed(r.Context(), id)
-
 	h.respondWithJSON(w, http.StatusOK, blob)
 }
 
 // Upload handles POST /api/v1/sync/:id
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "missing sync id", http.StatusBadRequest)
-		return
-	}
 
 	// Limit request body size and read it for hashing
 	r.Body = http.MaxBytesReader(w, r.Body, MaxPayloadSize)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read body or payload too large", http.StatusBadRequest)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
@@ -208,92 +179,93 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Retrieve Identity
 	identity, err := h.store.GetIdentity(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// Registration Path
-			if req.RegistrationSecret == "" {
-				http.Error(w, "registration secret required for new ID", http.StatusUnauthorized)
-				return
-			}
-
-			origin := req.AllowedOrigin
-			if origin == "" {
-				origin = r.Header.Get("Origin")
-			}
-
-			if origin != "" {
-				normalized, err := parseAllowedOrigin(origin)
-				if err != nil {
-					http.Error(w, "invalid allowed_origin: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				origin = normalized
-			}
-
-			if err := h.store.CreateIdentity(r.Context(), id, req.RegistrationSecret, origin); err != nil {
-				slog.Error("Upload: failed to create identity", "id", id, "error", err)
-				http.Error(w, "failed to create identity", http.StatusInternalServerError)
-				return
-			}
-			identity = &models.SyncIdentity{
-				ID:            id,
-				SigningSecret: req.RegistrationSecret,
-				AllowedOrigin: origin,
-				LastTimestamp: 0,
-			}
-		} else {
-			slog.Error("Upload: failed to get identity", "id", id, "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		h.register(w, r, id, &req, bodyBytes)
+		return
+	case err != nil:
+		slog.Error("Upload: failed to get identity", "id", id, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
-	ts, err := h.verifySignature(r, identity, bodyBytes)
+	ts, err := verifySignature(r, identity, bodyBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Save Data (this also updates identity timestamp for replay protection)
+	// Atomically checks the timestamp, stores the blob and prunes history.
 	if err := h.store.SaveBlob(r.Context(), id, req.Data, ts); err != nil {
+		if errors.Is(err, store.ErrStaleTimestamp) {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 		slog.Error("Upload: failed to save blob", "id", id, "error", err)
 		http.Error(w, "failed to save sync data", http.StatusInternalServerError)
 		return
 	}
 
-	// Broadcast update to WebSocket clients
 	if h.hub != nil {
 		h.hub.BroadcastUpdate(id, req.Data, ts)
 	}
+	w.WriteHeader(http.StatusCreated)
+}
 
-	_ = h.store.UpdateLastAccessed(r.Context(), id)
+// register handles the first upload for a previously unknown sync ID. The request
+// is verified against the secret it carries before anything is written, and the
+// identity and its first blob are stored in a single transaction.
+func (h *Handler) register(w http.ResponseWriter, r *http.Request, id string, req *models.SyncRequest, body []byte) {
+	if req.RegistrationSecret == "" {
+		http.Error(w, "registration secret required for new ID", http.StatusUnauthorized)
+		return
+	}
+	if len(id) > MaxIDLength {
+		http.Error(w, "sync id too long", http.StatusBadRequest)
+		return
+	}
+
+	origin := req.AllowedOrigin
+	if origin == "" {
+		origin = r.Header.Get("Origin")
+	}
+	if origin != "" {
+		normalized, err := normalizeOrigin(origin)
+		if err != nil {
+			http.Error(w, "invalid allowed_origin: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		origin = normalized
+	}
+
+	ts, err := verifySignature(r, &models.SyncIdentity{SigningSecret: req.RegistrationSecret}, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if err := h.store.Register(r.Context(), id, req.RegistrationSecret, origin, req.Data, ts); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			// Lost a race with a concurrent registration for the same ID.
+			http.Error(w, "sync id already registered", http.StatusConflict)
+			return
+		}
+		slog.Error("Upload: failed to register identity", "id", id, "error", err)
+		http.Error(w, "failed to create identity", http.StatusInternalServerError)
+		return
+	}
+
+	if h.hub != nil {
+		h.hub.BroadcastUpdate(id, req.Data, ts)
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
 // GetHistory handles GET /api/v1/sync/:id/history
 func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "missing sync id", http.StatusBadRequest)
-		return
-	}
-
-	identity, err := h.store.GetIdentity(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, "sync id not found", http.StatusNotFound)
-			return
-		}
-		slog.Error("GetHistory: failed to get identity", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	ts, err := h.verifySignature(r, identity, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	if !h.authorizeRead(w, r, id, "GetHistory") {
 		return
 	}
 
@@ -308,42 +280,19 @@ func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update identity timestamp for replay protection
-	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, ts); err != nil {
-		slog.Error("GetHistory: failed to update identity timestamp", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	_ = h.store.UpdateLastAccessed(r.Context(), id)
-
 	h.respondWithJSON(w, http.StatusOK, history)
 }
 
 // GetVersion handles GET /api/v1/sync/:id/:timestamp
 func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	tsStr := chi.URLParam(r, "timestamp")
-
-	requestedTs, err := strconv.ParseInt(tsStr, 10, 64)
+	requestedTs, err := strconv.ParseInt(chi.URLParam(r, "timestamp"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid timestamp format", http.StatusBadRequest)
 		return
 	}
 
-	identity, err := h.store.GetIdentity(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, "sync id not found", http.StatusNotFound)
-			return
-		}
-		slog.Error("GetVersion: failed to get identity", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	authTs, err := h.verifySignature(r, identity, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	if !h.authorizeRead(w, r, id, "GetVersion") {
 		return
 	}
 
@@ -358,14 +307,6 @@ func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update identity timestamp for replay protection
-	if err := h.store.UpdateIdentityTimestamp(r.Context(), id, authTs); err != nil {
-		slog.Error("GetVersion: failed to update identity timestamp", "id", id, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	_ = h.store.UpdateLastAccessed(r.Context(), id)
-
 	h.respondWithJSON(w, http.StatusOK, blob)
 }
 
@@ -377,8 +318,8 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader != "Bearer "+h.statsToken {
+	expected := []byte("Bearer " + h.statsToken)
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), expected) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -393,27 +334,6 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 	h.respondWithJSON(w, http.StatusOK, stats)
 }
 
-// parseAllowedOrigin validates and normalizes a candidate origin value for storage.
-// It returns the canonical "scheme://host[:port]" form, or an error if the value
-// is not a valid http/https origin. Wildcards are explicitly rejected.
-func parseAllowedOrigin(raw string) (string, error) {
-	if raw == "*" {
-		return "", fmt.Errorf("wildcard is not a valid allowed origin")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid origin: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("origin must use http or https scheme, got %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", fmt.Errorf("origin must include a host")
-	}
-	// Return canonical form: scheme://host (strips any path, query string, or fragment)
-	return u.Scheme + "://" + u.Host, nil
-}
-
 // ServeWS handles WebSocket connection upgrades
 func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if h.hub == nil {
@@ -426,8 +346,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		ip = host
 	}
 
-	// Check IP connection limit (max 32)
-	if h.hub.GetIPCount(ip) >= 32 {
+	if !h.hub.reserveIP(ip) {
 		slog.Warn("WS: IP connection limit exceeded", "ip", ip)
 		http.Error(w, "too many connections from this IP", http.StatusTooManyRequests)
 		return
@@ -435,27 +354,19 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error("WS: failed to upgrade connection", "error", err)
+		h.hub.releaseIP(ip)
+		slog.Warn("WS: failed to upgrade connection", "error", err)
 		return
 	}
 
-	client := &Client{
-		hub:     h.hub,
-		handler: h,
-		conn:    conn,
-		send:    make(chan interface{}, 256),
-		ip:      ip,
-		subs:    make(map[string]bool),
-	}
-	client.hub.register <- client
+	client := newClient(h, conn, ip, r.Header.Get("Origin"))
+	h.hub.register(client)
 
-	// Allow collection of memory referenced by the caller by doing all work in
-	// new goroutines.
 	go client.writePump()
 	go client.readPump()
 }
 
-func (h *Handler) respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+func (h *Handler) respondWithJSON(w http.ResponseWriter, code int, payload any) {
 	response, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("failed to encode JSON response", "error", err)

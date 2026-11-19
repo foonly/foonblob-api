@@ -20,7 +20,7 @@ func TestSecretEncryption(t *testing.T) {
 		defer s.Close()
 
 		// Create identity
-		err = s.CreateIdentity(ctx, id, secret, "http://localhost")
+		err = s.Register(ctx, id, secret, "http://localhost", "blob", 1)
 		if err != nil {
 			t.Fatalf("failed to create identity: %v", err)
 		}
@@ -59,7 +59,7 @@ func TestSecretEncryption(t *testing.T) {
 		}
 		defer s1.Close()
 
-		if err := s1.CreateIdentity(ctx, id, secret, ""); err != nil {
+		if err := s1.Register(ctx, id, secret, "", "blob", 1); err != nil {
 			t.Fatalf("failed to create identity in s1: %v", err)
 		}
 
@@ -92,7 +92,7 @@ func TestSecretEncryption(t *testing.T) {
 		}
 		defer s.Close()
 
-		if err := s.CreateIdentity(ctx, id, secret, ""); err != nil {
+		if err := s.Register(ctx, id, secret, "", "blob", 1); err != nil {
 			t.Fatalf("failed to create identity: %v", err)
 		}
 
@@ -111,6 +111,78 @@ func TestSecretEncryption(t *testing.T) {
 		}
 		if identity.SigningSecret != secret {
 			t.Errorf("expected %q, got %q", secret, identity.SigningSecret)
+		}
+	})
+}
+
+func TestStoreGuards(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("RejectsInvalidHistoryLimit", func(t *testing.T) {
+		if _, err := NewSQLiteStore(":memory:", 0, ""); err == nil {
+			t.Fatal("expected error for history limit 0")
+		}
+	})
+
+	t.Run("TouchRejectsStaleTimestamp", func(t *testing.T) {
+		s, err := NewSQLiteStore(":memory:", 10, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.Register(ctx, "id", "secret", "", "blob", 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Touch(ctx, "id", 100); err != ErrStaleTimestamp {
+			t.Fatalf("expected ErrStaleTimestamp for equal ts, got %v", err)
+		}
+		if err := s.Touch(ctx, "id", 101); err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		if err := s.SaveBlob(ctx, "id", "b2", 101); err != ErrStaleTimestamp {
+			t.Fatalf("expected ErrStaleTimestamp from SaveBlob, got %v", err)
+		}
+		if err := s.Register(ctx, "id", "other", "", "blob", 200); err != ErrAlreadyExists {
+			t.Fatalf("expected ErrAlreadyExists, got %v", err)
+		}
+	})
+
+	t.Run("HistoryIsPruned", func(t *testing.T) {
+		s, err := NewSQLiteStore(":memory:", 3, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.Register(ctx, "id", "secret", "", "b0", 1); err != nil {
+			t.Fatal(err)
+		}
+		for ts := int64(2); ts <= 6; ts++ {
+			if err := s.SaveBlob(ctx, "id", "b", ts); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h, err := s.GetHistory(ctx, "id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h) != 3 || h[0].Timestamp != 6 {
+			t.Fatalf("expected 3 newest versions, got %v", h)
+		}
+	})
+
+	t.Run("RefusesToStartWithEncryptedSecretsButNoKey", func(t *testing.T) {
+		dsn := "file:" + t.TempDir() + "/enc.db"
+		s, err := NewSQLiteStore(dsn, 10, "some-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Register(ctx, "id", "secret", "", "blob", 1); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+
+		if _, err := NewSQLiteStore(dsn, 10, ""); err == nil {
+			t.Fatal("expected startup error when encrypted secrets exist but no key is configured")
 		}
 	})
 }

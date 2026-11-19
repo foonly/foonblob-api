@@ -1,13 +1,14 @@
 package models
 
 // SyncIdentity represents the registration and authentication info for a sync ID.
+// It is internal only and must never be serialized to clients.
 type SyncIdentity struct {
-	ID             string `json:"id"`
-	SigningSecret  string `json:"signing_secret"`
-	AllowedOrigin  string `json:"allowed_origin"`
-	LastTimestamp  int64  `json:"last_timestamp"`
-	CreatedAt      int64  `json:"created_at"`
-	LastAccessedAt int64  `json:"last_accessed_at"`
+	ID             string `json:"-"`
+	SigningSecret  string `json:"-"`
+	AllowedOrigin  string `json:"-"`
+	LastTimestamp  int64  `json:"-"`
+	CreatedAt      int64  `json:"-"`
+	LastAccessedAt int64  `json:"-"`
 }
 
 // SyncBlob represents the encrypted data stored for a specific sync ID.

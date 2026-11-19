@@ -2,63 +2,93 @@ package api
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
-	"math"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/foonly/foonblob-api/internal/models"
+	"github.com/foonly/foonblob-api/internal/store"
 	"github.com/gorilla/websocket"
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 1024 * 1024 // 1MB
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+
+	// maxMessageSize bounds inbound client messages. Clients only send small
+	// subscribe/unsubscribe control messages.
+	maxMessageSize = 4096
+
+	// sendBuffer is the number of outbound messages queued per client before it is
+	// considered too slow and disconnected.
+	sendBuffer = 64
+
+	// storeTimeout bounds database calls made on behalf of WebSocket messages.
+	storeTimeout = 5 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Origin validation is handled in the Upgrade handler
-		return true
-	},
+	// Connections are accepted from any origin. The origin is recorded on the client
+	// and enforced per subscription against the identity's registered allowed origin.
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 // Client is a middleman between the websocket connection and the hub.
 type Client struct {
-	hub *Hub
-
-	// The handler for accessing store and shared logic
+	hub     *Hub
 	handler *Handler
+	conn    *websocket.Conn
 
-	// The websocket connection.
-	conn *websocket.Conn
+	// Buffered channel of outbound messages. Never closed.
+	send chan any
+	// Closed by the hub when the client is unregistered.
+	done chan struct{}
 
-	// Buffered channel of outbound messages.
-	send chan interface{}
+	ip     string
+	origin string
 
-	// IP address of the client
-	ip string
+	// Active subscriptions. Guarded by hub.mu.
+	subs map[string]struct{}
+}
 
-	// Set of active subscriptions (syncID -> true)
-	subs map[string]bool
+func newClient(h *Handler, conn *websocket.Conn, ip, origin string) *Client {
+	return &Client{
+		hub:     h.hub,
+		handler: h,
+		conn:    conn,
+		send:    make(chan any, sendBuffer),
+		done:    make(chan struct{}),
+		ip:      ip,
+		origin:  origin,
+		subs:    make(map[string]struct{}),
+	}
+}
 
-	mu sync.Mutex
+// trySend queues a message without blocking. It returns false if the client is
+// gone or its buffer is full.
+func (c *Client) trySend(msg any) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	select {
+	case c.send <- msg:
+		return true
+	default:
+		return false
+	}
 }
 
 // readPump pumps messages from the websocket connection to the hub.
 func (c *Client) readPump() {
 	defer func() {
-		c.hub.unregister <- c
+		c.hub.unregister(c)
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
@@ -70,10 +100,10 @@ func (c *Client) readPump() {
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				slog.Error("websocket read error", "error", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
+				slog.Warn("websocket read error", "error", err)
 			}
-			break
+			return
 		}
 
 		var msg models.WSClientMessage
@@ -102,17 +132,16 @@ func (c *Client) writePump() {
 	}()
 	for {
 		select {
-		case message, ok := <-c.send:
+		case message := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				// The hub closed the channel.
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
 			if err := c.conn.WriteJSON(message); err != nil {
 				return
 			}
+
+		case <-c.done:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			return
 
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -124,15 +153,7 @@ func (c *Client) writePump() {
 }
 
 func (c *Client) sendError(message string, code int) {
-	select {
-	case c.send <- models.WSErrorMessage{
-		Type:    "error",
-		Message: message,
-		Code:    code,
-	}:
-	default:
-		// Channel is full or closed, ignore
-	}
+	c.trySend(models.WSErrorMessage{Type: "error", Message: message, Code: code})
 }
 
 func (c *Client) handleSubscribe(msg models.WSClientMessage) {
@@ -141,76 +162,58 @@ func (c *Client) handleSubscribe(msg models.WSClientMessage) {
 		return
 	}
 
-	c.mu.Lock()
-	if len(c.subs) >= 32 {
-		c.mu.Unlock()
-		c.sendError("subscription limit exceeded (max 32)", http.StatusTooManyRequests)
+	if already, n := c.hub.subscribed(c, msg.ID); already {
+		return
+	} else if n >= maxSubsPerConn {
+		c.sendError(errSubscriptionLimit.Error(), http.StatusTooManyRequests)
 		return
 	}
-	if c.subs[msg.ID] {
-		c.mu.Unlock()
-		// Already subscribed, ignore or notify? Let's just ignore.
-		return
-	}
-	c.mu.Unlock()
 
-	// 1. Get Identity
-	identity, err := c.handler.store.GetIdentity(context.Background(), msg.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	st := c.handler.store
+
+	identity, err := st.GetIdentity(ctx, msg.ID)
 	if err != nil {
-		c.sendError("sync id not found", http.StatusNotFound)
+		if errors.Is(err, store.ErrNotFound) {
+			c.sendError("sync id not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("WS handleSubscribe: failed to get identity", "id", msg.ID, "error", err)
+		c.sendError("internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// 2. Verify Signature
-	// For WS subscriptions, we sign: timestamp + "subscribe" + id
-	contentToSign := fmt.Sprintf("%d%s%s", msg.Timestamp, "subscribe", msg.ID)
-
-	// Check Timestamp Window (5 minutes)
-	now := time.Now().Unix()
-	if math.Abs(float64(now-msg.Timestamp)) > 300 {
-		c.sendError("timestamp expired or invalid", http.StatusUnauthorized)
+	if !originAllowed(c.origin, identity.AllowedOrigin) {
+		c.sendError("origin not allowed", http.StatusForbidden)
 		return
 	}
 
-	// Replay Protection
-	if msg.Timestamp <= identity.LastTimestamp {
-		c.sendError("timestamp must be newer than previous request", http.StatusUnauthorized)
+	// Signed content: timestamp + "subscribe" + id
+	if err := authenticate(identity.SigningSecret, identity.LastTimestamp, msg.Timestamp, "subscribe"+msg.ID, msg.Signature); err != nil {
+		c.sendError(err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	sigBytes, err := hex.DecodeString(msg.Signature)
-	if err != nil {
-		c.sendError("invalid signature encoding", http.StatusUnauthorized)
-		return
-	}
-
-	mac := hmac.New(sha256.New, []byte(identity.SigningSecret))
-	mac.Write([]byte(contentToSign))
-
-	if !hmac.Equal(sigBytes, mac.Sum(nil)) {
-		c.sendError("invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	// 3. Update identity timestamp for replay protection
-	if err := c.handler.store.UpdateIdentityTimestamp(context.Background(), msg.ID, msg.Timestamp); err != nil {
+	if err := st.Touch(ctx, msg.ID, msg.Timestamp); err != nil {
+		if errors.Is(err, store.ErrStaleTimestamp) {
+			c.sendError(err.Error(), http.StatusUnauthorized)
+			return
+		}
 		slog.Error("WS handleSubscribe: failed to update identity timestamp", "id", msg.ID, "error", err)
 		c.sendError("internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// 4. Subscribe in Hub
-	c.hub.Subscribe(c, msg.ID)
+	if err := c.hub.Subscribe(c, msg.ID); err != nil {
+		c.sendError(err.Error(), http.StatusTooManyRequests)
+		return
+	}
 
-	// 5. Send initial state immediately
-	blob, err := c.handler.store.GetLatestBlob(context.Background(), msg.ID)
+	// Send initial state immediately.
+	blob, err := st.GetLatestBlob(ctx, msg.ID)
 	if err == nil {
-		c.send <- models.WSUpdateMessage{
-			Type:      "update",
-			ID:        msg.ID,
-			Data:      blob.Data,
-			Timestamp: blob.Timestamp,
-		}
+		c.trySend(models.WSUpdateMessage{Type: "update", ID: msg.ID, Data: blob.Data, Timestamp: blob.Timestamp})
 	}
 }
 

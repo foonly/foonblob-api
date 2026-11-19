@@ -1,10 +1,5 @@
 package models
 
-// WSMessage represents the base structure for all WebSocket messages.
-type WSMessage struct {
-	Type string `json:"type"`
-}
-
 // WSClientMessage is the message sent by the client.
 type WSClientMessage struct {
 	Type      string `json:"type"`

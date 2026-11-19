@@ -1,14 +1,27 @@
 # Foonblob API Configuration
+# Every key can also be set via an environment variable: FOONBLOB_<KEY in upper case>.
+
+# Address to bind to. Empty means all interfaces; use "127.0.0.1" behind a reverse proxy.
+host = ""
 
 # The port the server will listen on
 port = 8080
 
-# SQLite database connection string
+# SQLite database file path
 dsn = "sync.db"
 
-# Maximum number of historical versions to keep per sync ID
+# Maximum number of historical versions to keep per sync ID (minimum 1)
 history_limit = 10
 
-# Bearer token for accessing the /api/v1/stats endpoint
-# If left empty, access to the endpoint will be denied
+# Bearer token for accessing the /api/v1/stats endpoint.
+# If left empty, access to the endpoint will be denied.
 stats_token = ""
+
+# Key used to encrypt client signing secrets at rest. If empty, they are stored in
+# plaintext. Once set, it must not be removed or changed, or existing sync IDs
+# can no longer authenticate (the server refuses to start in that case).
+secret_encryption_key = ""
+
+# Use X-Forwarded-For / X-Real-IP / True-Client-IP as the client IP. Only enable this
+# behind a reverse proxy that sets these headers; otherwise clients can spoof their IP.
+trust_proxy_headers = true

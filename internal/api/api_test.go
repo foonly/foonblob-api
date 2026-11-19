@@ -25,7 +25,7 @@ func setupTest(t *testing.T) (http.Handler, store.Store) {
 		t.Fatalf("failed to create test store: %v", err)
 	}
 	h := NewHandler(s, "", nil)
-	r, stop := NewRouter(h)
+	r, stop := NewRouter(h, true)
 	t.Cleanup(stop)
 	return r, s
 }
@@ -181,8 +181,8 @@ func TestSyncAPI(t *testing.T) {
 		rr := httptest.NewRecorder()
 		router.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusBadRequest {
-			t.Errorf("expected status 400 for oversized payload, got %d", rr.Code)
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413 for oversized payload, got %d", rr.Code)
 		}
 	})
 }
@@ -427,7 +427,7 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 	token := "test-stats-token"
 	h := NewHandler(s, token, nil)
-	router, stop := NewRouter(h)
+	router, stop := NewRouter(h, true)
 	t.Cleanup(stop)
 
 	// Create an identity and upload a blob to have some stats

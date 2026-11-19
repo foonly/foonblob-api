@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,86 +21,104 @@ import (
 var Version = "dev"
 
 func main() {
-	// Initialize structured logging (slog) with JSON output
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	// Load configuration using Viper
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("failed to load configuration", "error", err)
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
+}
 
-	// Initialize the persistence layer
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	slog.Info("configuration loaded", "file", cfg.File, "dsn", cfg.DSN, "history_limit", cfg.HistoryLimit, "trust_proxy_headers", cfg.TrustProxyHeaders)
+	if cfg.SecretEncryptionKey == "" {
+		slog.Warn("secret_encryption_key is not set; signing secrets are stored in plaintext")
+	}
+	if cfg.StatsToken == "" {
+		slog.Warn("stats_token is not set; /api/v1/stats is disabled")
+	}
+
 	s, err := store.NewSQLiteStore(cfg.DSN, cfg.HistoryLimit, cfg.SecretEncryptionKey)
 	if err != nil {
-		slog.Error("failed to initialize storage", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer s.Close()
 
-	// Start background cleanup worker
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cleanupDone := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-
-		// Run once on startup
-		slog.Info("Running initial database cleanup...")
-		if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
-			slog.Error("cleanup error", "error", err)
-		} else {
-			slog.Info("cleanup successful", "deleted_identities", deleted)
-		}
-
-		for range ticker.C {
-			slog.Info("Running scheduled database cleanup...")
-			if deleted, err := s.CleanupOldIdentities(context.Background()); err != nil {
-				slog.Error("cleanup error", "error", err)
-			} else {
-				slog.Info("cleanup successful", "deleted_identities", deleted)
-			}
-		}
+		defer close(cleanupDone)
+		runCleanup(ctx, s)
 	}()
 
-	// Initialize the Hub for WebSockets
 	hub := api.NewHub()
-	go hub.Run()
-
-	// Initialize handlers and router
 	handler := api.NewHandler(s, cfg.StatsToken, hub)
-	router, stopLimiter := api.NewRouter(handler)
+	router, stopLimiter := api.NewRouter(handler, cfg.TrustProxyHeaders)
 	defer stopLimiter()
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      router,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second, // allows a 1MB upload on a slow link
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	// Channel to listen for interrupt signals to gracefully shutdown
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-
+	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("Starting server", "port", cfg.Port, "version", Version)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("listen failure", "error", err)
-			os.Exit(1)
-		}
+		slog.Info("starting server", "addr", srv.Addr, "version", Version)
+		serveErr <- srv.ListenAndServe()
 	}()
 
-	<-done
-	slog.Info("Server stopping...")
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	case <-ctx.Done():
+	}
+	slog.Info("server stopping")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("Server Shutdown Failed", "error", err)
-		os.Exit(1)
+	// Shutdown does not track hijacked (WebSocket) connections; close them explicitly.
+	hub.Close()
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	stop()
+	<-cleanupDone
+
+	if shutdownErr != nil {
+		return shutdownErr
 	}
-	slog.Info("Server exited properly")
+	slog.Info("server exited properly")
+	return nil
+}
+
+// runCleanup removes stale identities on startup and then every 24 hours until
+// ctx is cancelled.
+func runCleanup(ctx context.Context, s store.Store) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		if deleted, err := s.CleanupOldIdentities(ctx); err != nil {
+			if ctx.Err() == nil {
+				slog.Error("cleanup error", "error", err)
+			}
+		} else {
+			slog.Info("cleanup successful", "deleted_identities", deleted)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
