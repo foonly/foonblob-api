@@ -3,36 +3,59 @@ Description=Foonblob API Service
 After=network.target
 
 [Service]
-# The user and group the service will run as
-# Recommendation: Create a dedicated system user
-# sudo useradd -r -s /bin/false foonblob
+Type=exec
+# Dedicated system user (see README: useradd -r -s /usr/sbin/nologin foonblob)
 User=foonblob
 Group=foonblob
 
-# Path to the binary and working directory
+# systemd creates /var/lib/foonblob-api owned by the service user.
+StateDirectory=foonblob-api
+StateDirectoryMode=0750
 WorkingDirectory=/var/lib/foonblob-api
 ExecStart=/usr/local/bin/foonblob-api
 
-# Configuration can be provided via Environment, EnvironmentFile, or config.toml.
-# Best Practice: Use 'systemctl edit' or an EnvironmentFile for secrets.
+# Non-secret configuration. A config file at /etc/foonblob-api/config.toml is also
+# picked up automatically; FOONBLOB_* environment variables override it.
 Environment=FOONBLOB_PORT=8080
 Environment=FOONBLOB_DSN=/var/lib/foonblob-api/sync.db
-# EnvironmentFile=/etc/foonblob-api/secrets.env
+# When running behind a reverse proxy on the same host, bind to loopback only:
+# Environment=FOONBLOB_HOST=127.0.0.1
+# When NOT behind a reverse proxy, stop trusting X-Forwarded-For & co:
+# Environment=FOONBLOB_TRUST_PROXY_HEADERS=false
 
-# Restart policy
+# Secrets (FOONBLOB_STATS_TOKEN, FOONBLOB_SECRET_ENCRYPTION_KEY) belong in a
+# root-owned 0600 file. Do not put them in Environment= lines: those are readable
+# by any local user via `systemctl show`.
+EnvironmentFile=-/etc/foonblob-api/secrets.env
+
 Restart=always
 RestartSec=5
+TimeoutStopSec=15
 
-# Security Hardening
-# Prevents the service from seeing most of the file system
-ProtectSystem=full
-# Gives the service its own /tmp
-PrivateTmp=true
-# Prevents the service from gaining new privileges
+# Security hardening
+UMask=0077
 NoNewPrivileges=true
-# Restricts access to device nodes
-DeviceAllow=/dev/null rw
-DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

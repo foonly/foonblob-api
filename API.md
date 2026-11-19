@@ -2,7 +2,7 @@
 
 This guide provides a detailed technical specification for developers building client applications that integrate with the Foonblob API.
 
-Foonblob is designed as a **zero-knowledge** storage provider. The server facilitates data synchronization but never has access to the plaintext data or the authorization secrets.
+Foonblob is designed as a **zero-knowledge** storage provider for your data: the server facilitates data synchronization but never has access to the plaintext data. Note that the server _does_ store each Sync ID's `SigningSecret` (HMAC is symmetric), optionally encrypted at rest, so never reuse your data encryption key as the signing secret.
 
 ---
 
@@ -28,7 +28,7 @@ For management operations (`/api/v1/stats`):
 ### Anti-Replay & Security Rules
 
 1. **Timestamp Window**: The server rejects requests with a timestamp difference > 300 seconds (5 minutes) from server time.
-2. **Strict Increment**: For a given `SyncID`, the `X-Sync-Timestamp` must be **strictly greater** than the timestamp of the previous successful request.
+2. **Strict Increment**: For a given `SyncID`, the `X-Sync-Timestamp` must be **strictly greater** than the timestamp of the previous successful request. This applies across all request types (uploads, reads, WebSocket subscribes) and across all devices sharing the ID. Because timestamps are in seconds, **at most one authenticated request per second per Sync ID** can succeed; clients should serialize requests and retry a `401` with a fresh timestamp.
 3. **Signature Scope**:
    - For `POST` requests, the signature covers the **JSON body**.
    - For `GET` requests, the signature covers the **URL Path**.
@@ -83,10 +83,12 @@ If the `:id` does not exist, the server will create it using the `registration_s
 }
 ```
 
-_Note: `allowed_origin` is optional. If omitted, the server will lock the ID to the `Origin` header of the registration request._
+_Note: `allowed_origin` is optional. If omitted, the server will lock the ID to the `Origin` header of the registration request. If neither is present (native clients), the ID is not origin-restricted. The origin is normalized (lowercased, default port removed). Sync IDs are limited to 256 characters._
+
+The registration request must be signed with the `registration_secret` just like any other `POST`.
 
 **Response:**
-`201 Created` (No body)
+`201 Created` (No body). `409 Conflict` if another client registered the same ID concurrently.
 
 ### Retrieve Latest
 
@@ -185,6 +187,8 @@ All messages are JSON-encoded.
 ```
 
 - `signature`: HMAC-SHA256 of `timestamp + "subscribe" + id` using the `SigningSecret`.
+- `timestamp` is subject to the same window and strict-increment rules as HTTP requests.
+- If the Sync ID has a registered origin, the WebSocket's `Origin` header must match it.
 
 **Unsubscribe:**
 
@@ -225,10 +229,12 @@ Sent immediately upon successful subscription and whenever the blob is updated.
 
 | Code  | Meaning           | Action                                                                 |
 | ----- | ----------------- | ---------------------------------------------------------------------- |
-| `400` | Bad Request       | Check payload size (max 1MB) or JSON formatting.                       |
+| `400` | Bad Request       | Check JSON formatting.                                                 |
 | `401` | Unauthorized      | Verify HMAC signature calculation or check if timestamp is increasing. |
 | `403` | Forbidden         | Cross-Origin request denied (Origin doesn't match registration).       |
 | `404` | Not Found         | Sync ID or specific version does not exist.                            |
+| `409` | Conflict          | Sync ID was registered concurrently by another client.                 |
+| `413` | Payload Too Large | Request body exceeds 1MB.                                              |
 | `429` | Too Many Requests | Rate limit exceeded. Back off and retry.                               |
 
 ---
