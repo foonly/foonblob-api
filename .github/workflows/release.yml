@@ -15,12 +15,20 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.25.x
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
       - name: Tests
-        run: go test -v ./internal/api/...
+        run: go test -race ./...
+      - name: Check version.txt matches tag
+        run: |
+          test "v$(cat version.txt)" = "${GITHUB_REF_NAME}" || {
+            echo "version.txt ($(cat version.txt)) does not match tag ${GITHUB_REF_NAME}"; exit 1; }
       - name: Build
-        run: go build -o bin/foonblob-api cmd/api/main.go
+        run: make build
+      - name: Checksum
+        run: cd bin && sha256sum foonblob-api > foonblob-api.sha256
       - name: Create Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "bin/foonblob-api"
+          artifacts: "bin/foonblob-api,bin/foonblob-api.sha256"

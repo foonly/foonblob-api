@@ -1,33 +1,41 @@
 # Project variables
 BINARY_NAME=foonblob-api
 BIN_DIR=bin
-CMD_DIR=cmd/api
+CMD_PKG=./cmd/api
 VERSION=$(shell cat version.txt 2>/dev/null || echo "dev")
 
-# Go settings
+# Go settings: static, reproducible binary with the version embedded
 GO=go
-GOFLAGS=-ldflags="-X 'main.Version=$(VERSION)'"
+export CGO_ENABLED=0
+GOFLAGS=-trimpath -ldflags="-s -w -X 'main.Version=$(VERSION)'"
 
-.PHONY: all build run test clean fmt tidy help
+.PHONY: all build run test vet check clean clean-db fmt tidy help
 
 all: build
 
 build: ## Build the API binary
 	@echo "Building $(BINARY_NAME) $(VERSION)..."
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_DIR)/main.go
+	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PKG)
 
 run: build ## Build and run the API
 	@echo "Running $(BINARY_NAME)..."
 	@./$(BIN_DIR)/$(BINARY_NAME)
 
-test: ## Run all tests
+test: ## Run all tests with the race detector
 	@echo "Running tests..."
-	$(GO) test -v ./...
+	CGO_ENABLED=1 $(GO) test -race ./...
 
-clean: ## Remove build artifacts and temporary database files
+vet: ## Run go vet
+	$(GO) vet ./...
+
+check: vet test ## Run vet and tests
+
+clean: ## Remove build artifacts
 	@echo "Cleaning up..."
 	@rm -rf $(BIN_DIR)
+
+clean-db: ## Delete the local development database (sync.db)
 	@rm -f sync.db sync.db-shm sync.db-wal
 
 fmt: ## Format Go source code
