@@ -112,10 +112,10 @@ func run() error {
 	return nil
 }
 
-// runCleanup removes stale identities on startup and then every 24 hours until
-// ctx is cancelled.
+// runCleanup removes stale identities and expired replay-protection signatures on
+// startup and then hourly until ctx is cancelled.
 func runCleanup(ctx context.Context, s store.Store) {
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
 		if deleted, err := s.CleanupOldIdentities(ctx); err != nil {

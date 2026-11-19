@@ -77,10 +77,10 @@ func (h *Handler) DynamicCORS(next http.Handler) http.Handler {
 // verifySignature authenticates a sync request against an identity.
 // For POST requests the signature covers the SHA-256 of the body; for GET
 // requests it covers the URL path.
-func verifySignature(r *http.Request, identity *models.SyncIdentity, body []byte) (int64, error) {
+func verifySignature(r *http.Request, identity *models.SyncIdentity, body []byte) (int64, store.Signature, error) {
 	ts, err := strconv.ParseInt(r.Header.Get("X-Sync-Timestamp"), 10, 64)
 	if err != nil {
-		return 0, errors.New("invalid or missing X-Sync-Timestamp")
+		return 0, store.Signature{}, errors.New("invalid or missing X-Sync-Timestamp")
 	}
 
 	content := r.URL.Path
@@ -88,13 +88,14 @@ func verifySignature(r *http.Request, identity *models.SyncIdentity, body []byte
 		content = sha256Hex(body)
 	}
 
-	if err := authenticate(identity.SigningSecret, identity.LastTimestamp, ts, content, r.Header.Get("X-Sync-Signature")); err != nil {
+	sig, err := authenticate(identity.SigningSecret, ts, content, r.Header.Get("X-Sync-Signature"))
+	if err != nil {
 		if errors.Is(err, errMissingSig) {
-			return 0, errors.New("missing X-Sync-Signature")
+			return 0, store.Signature{}, errors.New("missing X-Sync-Signature")
 		}
-		return 0, err
+		return 0, store.Signature{}, err
 	}
-	return ts, nil
+	return ts, sig, nil
 }
 
 // authorizeRead looks up the identity, verifies the request signature and atomically
@@ -112,14 +113,14 @@ func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, id, op s
 		return false
 	}
 
-	ts, err := verifySignature(r, identity, nil)
+	_, sig, err := verifySignature(r, identity, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return false
 	}
 
-	if err := h.store.Touch(r.Context(), id, ts); err != nil {
-		if errors.Is(err, store.ErrStaleTimestamp) {
+	if err := h.store.Consume(r.Context(), id, sig); err != nil {
+		if errors.Is(err, store.ErrReplay) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return false
 		}
@@ -190,15 +191,16 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ts, err := verifySignature(r, identity, bodyBytes)
+	ts, sig, err := verifySignature(r, identity, bodyBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Atomically checks the timestamp, stores the blob and prunes history.
-	if err := h.store.SaveBlob(r.Context(), id, req.Data, ts); err != nil {
-		if errors.Is(err, store.ErrStaleTimestamp) {
+	// Atomically consumes the signature, stores the blob and prunes history.
+	version, err := h.store.SaveBlob(r.Context(), id, req.Data, ts, sig)
+	if err != nil {
+		if errors.Is(err, store.ErrReplay) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -208,7 +210,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.hub != nil {
-		h.hub.BroadcastUpdate(id, req.Data, ts)
+		h.hub.BroadcastUpdate(id, req.Data, version)
 	}
 	w.WriteHeader(http.StatusCreated)
 }
@@ -239,7 +241,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request, id string, re
 		origin = normalized
 	}
 
-	ts, err := verifySignature(r, &models.SyncIdentity{SigningSecret: req.RegistrationSecret}, body)
+	ts, _, err := verifySignature(r, &models.SyncIdentity{SigningSecret: req.RegistrationSecret}, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return

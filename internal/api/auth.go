@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/foonly/foonblob-api/internal/store"
 )
 
 // maxClockSkew is how far a request timestamp may deviate from server time.
@@ -16,40 +18,38 @@ const maxClockSkew = 300 // seconds
 
 var (
 	errTimestampWindow = errors.New("timestamp expired or invalid")
-	errStaleTimestamp  = errors.New("timestamp must be newer than previous request")
 	errMissingSig      = errors.New("missing signature")
 	errSigEncoding     = errors.New("invalid signature encoding")
 	errBadSig          = errors.New("invalid signature")
 )
 
-// authenticate checks a request timestamp and HMAC-SHA256 signature.
+// authenticate checks a request timestamp and HMAC-SHA256 signature. The signed
+// message is the decimal timestamp followed by content.
 //
-// The signed message is the decimal timestamp followed by content. lastTs is the
-// most recent timestamp accepted for the identity; this check is only a fast path,
-// the authoritative replay check is the atomic update in the store.
-func authenticate(secret string, lastTs, ts int64, content, sigHex string) error {
+// On success it returns the signature for replay protection: the caller must
+// consume it in the store, which rejects any signature it has seen before. It is
+// canonical (lowercase hex) so a replay cannot slip through by changing the case,
+// and is remembered until the timestamp can no longer pass the window check.
+func authenticate(secret string, ts int64, content, sigHex string) (store.Signature, error) {
 	now := time.Now().Unix()
 	if ts < now-maxClockSkew || ts > now+maxClockSkew {
-		return errTimestampWindow
-	}
-	if ts <= lastTs {
-		return errStaleTimestamp
+		return store.Signature{}, errTimestampWindow
 	}
 	if sigHex == "" {
-		return errMissingSig
+		return store.Signature{}, errMissingSig
 	}
 	sig, err := hex.DecodeString(sigHex)
 	if err != nil {
-		return errSigEncoding
+		return store.Signature{}, errSigEncoding
 	}
 
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(strconv.FormatInt(ts, 10)))
 	mac.Write([]byte(content))
 	if !hmac.Equal(sig, mac.Sum(nil)) {
-		return errBadSig
+		return store.Signature{}, errBadSig
 	}
-	return nil
+	return store.Signature{Value: hex.EncodeToString(sig), ExpiresAt: ts + maxClockSkew + 60}, nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of b.

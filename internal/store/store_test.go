@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSecretEncryption(t *testing.T) {
@@ -125,7 +127,9 @@ func TestStoreGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("TouchRejectsStaleTimestamp", func(t *testing.T) {
+	sig := func(v string) Signature { return Signature{Value: v, ExpiresAt: time.Now().Unix() + 600} }
+
+	t.Run("ConsumeRejectsReplayedSignature", func(t *testing.T) {
 		s, err := NewSQLiteStore(":memory:", 10, "")
 		if err != nil {
 			t.Fatal(err)
@@ -134,17 +138,48 @@ func TestStoreGuards(t *testing.T) {
 		if err := s.Register(ctx, "id", "secret", "", "blob", 100); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Touch(ctx, "id", 100); err != ErrStaleTimestamp {
-			t.Fatalf("expected ErrStaleTimestamp for equal ts, got %v", err)
-		}
-		if err := s.Touch(ctx, "id", 101); err != nil {
+		if err := s.Consume(ctx, "id", sig("aa")); err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
-		if err := s.SaveBlob(ctx, "id", "b2", 101); err != ErrStaleTimestamp {
-			t.Fatalf("expected ErrStaleTimestamp from SaveBlob, got %v", err)
+		if err := s.Consume(ctx, "id", sig("aa")); err != ErrReplay {
+			t.Fatalf("expected ErrReplay, got %v", err)
+		}
+		if _, err := s.SaveBlob(ctx, "id", "b2", 101, sig("aa")); err != ErrReplay {
+			t.Fatalf("expected ErrReplay from SaveBlob, got %v", err)
+		}
+		// Equal or older timestamps are fine as long as the request is new.
+		if err := s.Consume(ctx, "id", sig("bb")); err != nil {
+			t.Fatalf("expected success, got %v", err)
 		}
 		if err := s.Register(ctx, "id", "other", "", "blob", 200); err != ErrAlreadyExists {
 			t.Fatalf("expected ErrAlreadyExists, got %v", err)
+		}
+	})
+
+	t.Run("VersionsIncreaseInWriteOrder", func(t *testing.T) {
+		s, err := NewSQLiteStore(":memory:", 10, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err := s.Register(ctx, "id", "secret", "", "first", 100); err != nil {
+			t.Fatal(err)
+		}
+		// A second device whose request timestamp is older or equal still writes
+		// a newer version.
+		for i, ts := range []int64{100, 98, 105} {
+			v, err := s.SaveBlob(ctx, "id", fmt.Sprintf("w%d", i), ts, sig(fmt.Sprint(i)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []int64{101, 102, 105}[i]
+			if v != want {
+				t.Fatalf("write %d: version %d, want %d", i, v, want)
+			}
+		}
+		latest, err := s.GetLatestBlob(ctx, "id")
+		if err != nil || latest.Data != "w2" || latest.Timestamp != 105 {
+			t.Fatalf("latest = %+v, %v", latest, err)
 		}
 	})
 
@@ -158,7 +193,7 @@ func TestStoreGuards(t *testing.T) {
 			t.Fatal(err)
 		}
 		for ts := int64(2); ts <= 6; ts++ {
-			if err := s.SaveBlob(ctx, "id", "b", ts); err != nil {
+			if _, err := s.SaveBlob(ctx, "id", "b", ts, Signature{Value: fmt.Sprint(ts), ExpiresAt: ts + 600}); err != nil {
 				t.Fatal(err)
 			}
 		}

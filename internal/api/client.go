@@ -108,7 +108,7 @@ func (c *Client) readPump() {
 
 		var msg models.WSClientMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
-			c.sendError("invalid message format", http.StatusBadRequest)
+			c.sendError("", "invalid message format", http.StatusBadRequest)
 			continue
 		}
 
@@ -118,7 +118,7 @@ func (c *Client) readPump() {
 		case "unsubscribe":
 			c.handleUnsubscribe(msg)
 		default:
-			c.sendError("unknown message type: "+msg.Type, http.StatusBadRequest)
+			c.sendError("", "unknown message type: "+msg.Type, http.StatusBadRequest)
 		}
 	}
 }
@@ -152,20 +152,22 @@ func (c *Client) writePump() {
 	}
 }
 
-func (c *Client) sendError(message string, code int) {
-	c.trySend(models.WSErrorMessage{Type: "error", Message: message, Code: code})
+// sendError reports an error to the client. id names the sync ID it relates to
+// (empty if none), so clients can tell which subscription to retry.
+func (c *Client) sendError(id, message string, code int) {
+	c.trySend(models.WSErrorMessage{Type: "error", ID: id, Message: message, Code: code})
 }
 
 func (c *Client) handleSubscribe(msg models.WSClientMessage) {
 	if msg.ID == "" {
-		c.sendError("missing sync id", http.StatusBadRequest)
+		c.sendError(msg.ID, "missing sync id", http.StatusBadRequest)
 		return
 	}
 
 	if already, n := c.hub.subscribed(c, msg.ID); already {
 		return
 	} else if n >= maxSubsPerConn {
-		c.sendError(errSubscriptionLimit.Error(), http.StatusTooManyRequests)
+		c.sendError(msg.ID, errSubscriptionLimit.Error(), http.StatusTooManyRequests)
 		return
 	}
 
@@ -176,37 +178,38 @@ func (c *Client) handleSubscribe(msg models.WSClientMessage) {
 	identity, err := st.GetIdentity(ctx, msg.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			c.sendError("sync id not found", http.StatusNotFound)
+			c.sendError(msg.ID, "sync id not found", http.StatusNotFound)
 			return
 		}
 		slog.Error("WS handleSubscribe: failed to get identity", "id", msg.ID, "error", err)
-		c.sendError("internal server error", http.StatusInternalServerError)
+		c.sendError(msg.ID, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if !originAllowed(c.origin, identity.AllowedOrigin) {
-		c.sendError("origin not allowed", http.StatusForbidden)
+		c.sendError(msg.ID, "origin not allowed", http.StatusForbidden)
 		return
 	}
 
 	// Signed content: timestamp + "subscribe" + id
-	if err := authenticate(identity.SigningSecret, identity.LastTimestamp, msg.Timestamp, "subscribe"+msg.ID, msg.Signature); err != nil {
-		c.sendError(err.Error(), http.StatusUnauthorized)
+	sig, err := authenticate(identity.SigningSecret, msg.Timestamp, "subscribe"+msg.ID, msg.Signature)
+	if err != nil {
+		c.sendError(msg.ID, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	if err := st.Touch(ctx, msg.ID, msg.Timestamp); err != nil {
-		if errors.Is(err, store.ErrStaleTimestamp) {
-			c.sendError(err.Error(), http.StatusUnauthorized)
+	if err := st.Consume(ctx, msg.ID, sig); err != nil {
+		if errors.Is(err, store.ErrReplay) {
+			c.sendError(msg.ID, err.Error(), http.StatusUnauthorized)
 			return
 		}
 		slog.Error("WS handleSubscribe: failed to update identity timestamp", "id", msg.ID, "error", err)
-		c.sendError("internal server error", http.StatusInternalServerError)
+		c.sendError(msg.ID, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := c.hub.Subscribe(c, msg.ID); err != nil {
-		c.sendError(err.Error(), http.StatusTooManyRequests)
+		c.sendError(msg.ID, err.Error(), http.StatusTooManyRequests)
 		return
 	}
 
@@ -219,7 +222,7 @@ func (c *Client) handleSubscribe(msg models.WSClientMessage) {
 
 func (c *Client) handleUnsubscribe(msg models.WSClientMessage) {
 	if msg.ID == "" {
-		c.sendError("missing sync id", http.StatusBadRequest)
+		c.sendError(msg.ID, "missing sync id", http.StatusBadRequest)
 		return
 	}
 	c.hub.Unsubscribe(c, msg.ID)

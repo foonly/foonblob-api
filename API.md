@@ -28,8 +28,9 @@ For management operations (`/api/v1/stats`):
 ### Anti-Replay & Security Rules
 
 1. **Timestamp Window**: The server rejects requests with a timestamp difference > 300 seconds (5 minutes) from server time.
-2. **Strict Increment**: For a given `SyncID`, the `X-Sync-Timestamp` must be **strictly greater** than the timestamp of the previous successful request. This applies across all request types (uploads, reads, WebSocket subscribes) and across all devices sharing the ID. Because timestamps are in seconds, **at most one authenticated request per second per Sync ID** can succeed; clients should serialize requests and retry a `401` with a fresh timestamp.
-3. **Signature Scope**:
+2. **No Replays**: Each signed request is accepted once. The server remembers accepted signatures until their timestamp leaves the 5-minute window and rejects repeats with `401`. Timestamps do not have to increase, so several devices can use the same `SyncID` at the same time. Two _identical_ requests in the same second (e.g. two devices fetching the same path) produce the same signature, so the second gets a `401`; retry it with a new timestamp.
+3. **Versions**: The `timestamp` of a stored blob is its version and always increases with each upload: it is the request timestamp, or one more than the previous version if that is not newer.
+4. **Signature Scope**:
    - For `POST` requests, the signature covers the **JSON body**.
    - For `GET` requests, the signature covers the **URL Path**.
 
@@ -187,7 +188,7 @@ All messages are JSON-encoded.
 ```
 
 - `signature`: HMAC-SHA256 of `timestamp + "subscribe" + id` using the `SigningSecret`.
-- `timestamp` is subject to the same window and strict-increment rules as HTTP requests.
+- `timestamp` is subject to the same window and no-replay rules as HTTP requests.
 - If the Sync ID has a registered origin, the WebSocket's `Origin` header must match it.
 
 **Unsubscribe:**
@@ -218,10 +219,13 @@ Sent immediately upon successful subscription and whenever the blob is updated.
 ```json
 {
 	"type": "error",
+	"id": "sync-id",
 	"message": "reason for failure",
 	"code": 401
 }
 ```
+
+`id` is present when the error concerns a specific subscription, so the client can retry it.
 
 ---
 

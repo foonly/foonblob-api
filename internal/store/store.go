@@ -11,13 +11,21 @@ var (
 	// ErrNotFound is returned when the requested sync ID or version does not exist.
 	ErrNotFound = errors.New("sync data not found")
 
-	// ErrStaleTimestamp is returned when a request timestamp is not newer than the
-	// last accepted timestamp for an identity (i.e. a replayed or out-of-order request).
-	ErrStaleTimestamp = errors.New("timestamp must be newer than previous request")
+	// ErrReplay is returned when a request signature has already been accepted for
+	// an identity, i.e. the request is a replay.
+	ErrReplay = errors.New("request has already been processed")
 
 	// ErrAlreadyExists is returned when registering an identity that already exists.
 	ErrAlreadyExists = errors.New("sync id already exists")
 )
+
+// Signature identifies an authenticated request for replay protection. Value must
+// be canonical (lowercase hex). It is remembered until ExpiresAt (Unix seconds),
+// after which the request's timestamp is rejected anyway.
+type Signature struct {
+	Value     string
+	ExpiresAt int64
+}
 
 // Store defines the interface for persisting encrypted foonblobs and their history.
 type Store interface {
@@ -28,15 +36,16 @@ type Store interface {
 	// Returns ErrAlreadyExists if the ID is already registered.
 	Register(ctx context.Context, id, secret, origin, data string, ts int64) error
 
-	// SaveBlob stores a new blob for an existing identity, advances its replay
-	// timestamp and prunes old versions, all in one transaction.
-	// Returns ErrStaleTimestamp if ts is not newer than the last accepted timestamp.
-	SaveBlob(ctx context.Context, id string, data string, ts int64) error
+	// SaveBlob consumes the request signature, stores a new blob for an existing
+	// identity and prunes old versions, all in one transaction. The blob's version
+	// timestamp is ts, or one more than the previous version if ts is not newer, so
+	// versions always increase in the order they were written. Returns the version
+	// timestamp, or ErrReplay if the signature was already used.
+	SaveBlob(ctx context.Context, id string, data string, ts int64, sig Signature) (int64, error)
 
-	// Touch atomically advances the replay timestamp and last-accessed time for
-	// an identity. Returns ErrStaleTimestamp if ts is not newer than the last
-	// accepted timestamp, which makes replay protection race-free.
-	Touch(ctx context.Context, id string, ts int64) error
+	// Consume records a request signature for an identity and updates its
+	// last-accessed time. Returns ErrReplay if the signature was already used.
+	Consume(ctx context.Context, id string, sig Signature) error
 
 	// GetLatestBlob retrieves the most recent blob for the given ID.
 	GetLatestBlob(ctx context.Context, id string) (*models.SyncBlob, error)

@@ -273,7 +273,7 @@ func TestHubSlowClientDoesNotPanic(t *testing.T) {
 	}
 
 	// Everything the read loop might still do after being dropped must be safe.
-	c.sendError("late", 500)
+	c.sendError("", "late", 500)
 	if err := hub.Subscribe(c, "other"); err != nil {
 		t.Fatal(err)
 	}
@@ -301,5 +301,57 @@ func TestHubIPLimit(t *testing.T) {
 	hub.releaseIP("ip")
 	if !hub.reserveIP("ip") {
 		t.Fatal("reservation after release should succeed")
+	}
+}
+
+func TestDevicesSharingAnIDDoNotCollide(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	if rr := e.post(t, "shared", "s", models.SyncRequest{Data: "v1", RegistrationSecret: "s"}, now, ""); rr.Code != http.StatusCreated {
+		t.Fatalf("register: %d", rr.Code)
+	}
+
+	// Two devices in the same second: different requests with equal timestamps,
+	// and one device whose clock (or counter) is behind the other.
+	if rr := e.get(t, "/api/v1/sync/shared", "s", now+3, ""); rr.Code != http.StatusOK {
+		t.Fatalf("device 1 read: %d %s", rr.Code, rr.Body)
+	}
+	if rr := e.get(t, "/api/v1/sync/shared/history", "s", now+3, ""); rr.Code != http.StatusOK {
+		t.Fatalf("device 2 read, same second: %d %s", rr.Code, rr.Body)
+	}
+	if rr := e.post(t, "shared", "s", models.SyncRequest{Data: "from device 1"}, now+3, ""); rr.Code != http.StatusCreated {
+		t.Fatalf("device 1 write: %d %s", rr.Code, rr.Body)
+	}
+	if rr := e.post(t, "shared", "s", models.SyncRequest{Data: "from device 2"}, now+1, ""); rr.Code != http.StatusCreated {
+		t.Fatalf("device 2 write, older timestamp: %d %s", rr.Code, rr.Body)
+	}
+
+	// The last write wins regardless of request timestamps.
+	rr := e.get(t, "/api/v1/sync/shared", "s", now+4, "")
+	var latest models.SyncBlob
+	json.Unmarshal(rr.Body.Bytes(), &latest)
+	if latest.Data != "from device 2" || latest.Timestamp <= now+3 {
+		t.Fatalf("latest = %+v, want device 2's write with a newer version", latest)
+	}
+}
+
+func TestReplayWithUppercaseSignatureRejected(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	if rr := e.post(t, "case", "s", models.SyncRequest{Data: "v1", RegistrationSecret: "s"}, now, ""); rr.Code != http.StatusCreated {
+		t.Fatalf("register: %d", rr.Code)
+	}
+	path := "/api/v1/sync/case"
+	sig := signRequest(t, "s", now+1, http.MethodGet, path, nil)
+	for i, s := range []string{sig, strings.ToUpper(sig)} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("X-Sync-Timestamp", fmt.Sprint(now+1))
+		r.Header.Set("X-Sync-Signature", s)
+		rr := httptest.NewRecorder()
+		e.router.ServeHTTP(rr, r)
+		want := []int{http.StatusOK, http.StatusUnauthorized}[i]
+		if rr.Code != want {
+			t.Fatalf("request %d: got %d, want %d", i, rr.Code, want)
+		}
 	}
 }

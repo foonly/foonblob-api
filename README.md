@@ -19,7 +19,7 @@ A decentralized, privacy-focused backend for synchronizing data across devices. 
 
 All sync endpoints require the following headers for authentication:
 
-- `X-Sync-Timestamp`: Current Unix timestamp (must be within 5 minutes of server time and strictly greater than the last accepted timestamp for that Sync ID).
+- `X-Sync-Timestamp`: Current Unix timestamp (must be within 5 minutes of server time). Each signed request is accepted only once.
 - `X-Sync-Signature`: HMAC-SHA256 signature of the request content (body for POST, URL path for GET).
 
 ### Sync Endpoints
@@ -57,7 +57,7 @@ The config file is read from the path in `FOONBLOB_CONFIG` if set, otherwise `co
 
 ## Cleanup Policy
 
-To keep the database lean, the API implements a background cleanup worker that runs every 24 hours. Identities and their associated blobs are deleted based on the following rules:
+To keep the database lean, the API implements a background cleanup worker that runs every hour. Identities and their associated blobs are deleted based on the following rules:
 
 1.  **Short-term Usage**: If an identity was used for less than 48 hours and has been inactive for more than **14 days**, it is deleted.
 2.  **Long-term Usage**: If an identity was used for 48 hours or more and has been inactive for more than **90 days**, it is deleted.

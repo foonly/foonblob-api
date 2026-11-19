@@ -18,7 +18,9 @@ type WSUpdateMessage struct {
 
 // WSErrorMessage is sent by the server when an error occurs.
 type WSErrorMessage struct {
-	Type    string `json:"type"`
+	Type string `json:"type"`
+	// ID is the sync ID the error relates to, if any, so clients can retry.
+	ID      string `json:"id,omitempty"`
 	Message string `json:"message"`
 	Code    int    `json:"code,omitempty"`
 }

@@ -218,41 +218,57 @@ func (s *sqliteStore) Register(ctx context.Context, id, secret, origin, data str
 	return tx.Commit()
 }
 
-// advance atomically moves an identity's replay timestamp forward. It is the single
-// point where replay protection is enforced, so concurrent requests carrying the same
-// timestamp cannot both succeed.
-func advance(ctx context.Context, ex interface {
+type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, id string, ts int64) error {
+}
+
+// consume records a request signature. The primary key makes this the single,
+// atomic point where replay protection is enforced: concurrent copies of the same
+// request cannot both succeed.
+func consume(ctx context.Context, ex execer, id string, sig Signature) error {
 	res, err := ex.ExecContext(ctx,
-		"UPDATE sync_identities SET last_timestamp = ?, last_accessed_at = ? WHERE id = ? AND last_timestamp < ?",
-		ts, time.Now().Unix(), id, ts)
+		"INSERT INTO seen_signatures (id, signature, expires_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+		id, sig.Value, sig.ExpiresAt)
 	if err != nil {
-		return fmt.Errorf("failed to update identity timestamp: %w", err)
+		return fmt.Errorf("failed to record request signature: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrStaleTimestamp
+		return ErrReplay
+	}
+	if _, err := ex.ExecContext(ctx, "UPDATE sync_identities SET last_accessed_at = ? WHERE id = ?", time.Now().Unix(), id); err != nil {
+		return fmt.Errorf("failed to update last access: %w", err)
 	}
 	return nil
 }
 
-func (s *sqliteStore) Touch(ctx context.Context, id string, ts int64) error {
-	return advance(ctx, s.db, id, ts)
+func (s *sqliteStore) Consume(ctx context.Context, id string, sig Signature) error {
+	return consume(ctx, s.db, id, sig)
 }
 
-func (s *sqliteStore) SaveBlob(ctx context.Context, id string, data string, ts int64) error {
+func (s *sqliteStore) SaveBlob(ctx context.Context, id string, data string, ts int64, sig Signature) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback()
 
-	if err := advance(ctx, tx, id, ts); err != nil {
-		return err
+	if err := consume(ctx, tx, id, sig); err != nil {
+		return 0, err
 	}
 
-	if _, err := tx.ExecContext(ctx, "INSERT INTO sync_blobs (id, blob, timestamp) VALUES (?, ?, ?)", id, data, ts); err != nil {
-		return fmt.Errorf("failed to insert blob: %w", err)
+	// Request timestamps from different devices may arrive out of order; the
+	// version timestamp must still increase with every write.
+	var version int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT MAX(?, COALESCE(MAX(timestamp), 0) + 1) FROM sync_blobs WHERE id = ?", ts, id).Scan(&version); err != nil {
+		return 0, fmt.Errorf("failed to determine version: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "INSERT INTO sync_blobs (id, blob, timestamp) VALUES (?, ?, ?)", id, data, version); err != nil {
+		return 0, fmt.Errorf("failed to insert blob: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE sync_identities SET last_timestamp = ? WHERE id = ?", version, id); err != nil {
+		return 0, fmt.Errorf("failed to update identity: %w", err)
 	}
 
 	// Prune old versions: keep only the latest N versions.
@@ -265,10 +281,10 @@ func (s *sqliteStore) SaveBlob(ctx context.Context, id string, data string, ts i
 		LIMIT ?
 	)`
 	if _, err := tx.ExecContext(ctx, pruneQuery, id, id, s.historyLimit); err != nil {
-		return fmt.Errorf("failed to prune history: %w", err)
+		return 0, fmt.Errorf("failed to prune history: %w", err)
 	}
 
-	return tx.Commit()
+	return version, tx.Commit()
 }
 
 func (s *sqliteStore) GetLatestBlob(ctx context.Context, id string) (*models.SyncBlob, error) {
@@ -374,6 +390,11 @@ func (s *sqliteStore) CleanupOldIdentities(ctx context.Context) (int64, error) {
 
 	// Cleanup orphaned blobs
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sync_blobs WHERE id NOT IN (SELECT id FROM sync_identities)"); err != nil {
+		return 0, err
+	}
+
+	// Signatures whose timestamps can no longer pass the clock-skew check.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM seen_signatures WHERE expires_at < ? OR id NOT IN (SELECT id FROM sync_identities)", now); err != nil {
 		return 0, err
 	}
 
