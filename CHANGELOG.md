@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 (2026-11-19)
+
+#### Features
+
+- deploy: continuous deployment with automatic rollback (7888597)
+
+#### Bug Fixes
+
+- api: make replay protection atomic and harden websocket hub (f01e359)
+
+#### Documentation
+
+- correct security claims and update deployment guide (45bc623)
+
+#### Build System
+
+- embed version in release builds and run all tests in CI (0fd491f)
+
 ## 0.6.0 (2026-06-23)
 
 #### Features
