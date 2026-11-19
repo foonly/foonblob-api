@@ -37,6 +37,7 @@ flock -n 9 || die "another deploy is in progress"
 
 # Receive and verify the binary before touching anything that is live.
 tmp=$(mktemp -d "$BASE/releases/.incoming.XXXXXX")
+chmod 0755 "$tmp" # mktemp creates 0700; the service user must be able to enter it
 trap 'rm -rf "$tmp"' EXIT
 head -c "$MAX_SIZE" >"$tmp/foonblob-api"
 echo "$sha  $tmp/foonblob-api" | sha256sum -c --quiet - || die "checksum mismatch"
@@ -55,7 +56,9 @@ trap - EXIT
 activate() {
 	ln -sfn "$1" "$BASE/current.new"
 	mv -T "$BASE/current.new" "$BASE/current"
-	$RESTART 9>&- # do not leak the deploy lock into the service
+	# A failed restart must not abort the script (set -e): the health check below
+	# then fails and triggers the rollback. Do not leak the deploy lock either.
+	$RESTART 9>&- || log "restart of $1 failed"
 }
 
 healthy() {
