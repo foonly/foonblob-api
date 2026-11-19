@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0 (2026-11-19)
+
+#### Features
+
+- api: allow concurrent devices by rejecting replayed signatures (3f6991c)
+
+#### Bug Fixes
+
+- deploy: make new releases readable and roll back on failed restart (8804a52)
+
 ## 0.7.0 (2026-11-19)
 
 #### Features
