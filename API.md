@@ -27,7 +27,7 @@ For management operations (`/api/v1/stats`):
 
 ### Anti-Replay & Security Rules
 
-1. **Timestamp Window**: The server rejects requests with a timestamp difference > 300 seconds (5 minutes) from server time.
+1. **Timestamp Window**: The server rejects requests with a timestamp difference > 300 seconds (5 minutes) from server time. Every response carries the server time in the standard `Date` header, exposed to browsers via `Access-Control-Expose-Headers`, so a client whose clock is off can measure the difference and sign with corrected timestamps.
 2. **No Replays**: Each signed request is accepted once. The server remembers accepted signatures until their timestamp leaves the 5-minute window and rejects repeats with `401`. Timestamps do not have to increase, so several devices can use the same `SyncID` at the same time. Two _identical_ requests in the same second (e.g. two devices fetching the same path) produce the same signature, so the second gets a `401`; retry it with a new timestamp.
 3. **Versions**: The `timestamp` of a stored blob is its version and always increases with each upload: it is the request timestamp, or one more than the previous version if that is not newer.
 4. **Signature Scope**:

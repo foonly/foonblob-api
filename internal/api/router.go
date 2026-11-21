@@ -80,6 +80,7 @@ func NewRouter(h *Handler, trustProxyHeaders bool) (http.Handler, func()) {
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "Date, X-Foonblob-Version")
 		w.Header().Set("X-Foonblob-Version", Version)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
