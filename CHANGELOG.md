@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 (2026-11-21)
+
+#### Features
+
+- api: expose the Date header to browser clients (5fc9064)
+
+#### Maintenance
+
+- rename foonver.toml (ed725dd)
+
 ## 0.8.0 (2026-11-19)
 
 #### Features
@@ -120,4 +130,3 @@
 #### Documentation
 
 - Add README.md with project overview and usage (17db423)
-
