@@ -42,6 +42,10 @@ func NewHandler(s store.Store, statsToken string, hub *Hub) *Handler {
 // server-side origin checking when an origin restriction is registered.
 func (h *Handler) DynamicCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Let browser clients read the server time, so they can detect and
+		// correct for a device clock outside the timestamp window.
+		w.Header().Set("Access-Control-Expose-Headers", "Date")
+
 		id := chi.URLParam(r, "id")
 		if id != "" {
 			identity, err := h.store.GetIdentity(r.Context(), id)

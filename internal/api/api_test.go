@@ -474,3 +474,27 @@ func TestStatsEndpoint(t *testing.T) {
 		t.Errorf("expected 1 identity, got %d", stats.Totals.Identities)
 	}
 }
+
+func TestExposesDateHeader(t *testing.T) {
+	router, _ := setupTest(t)
+
+	// Browser clients read Date to correct for device clock skew, so it must be
+	// exposed on every sync response, including errors and unknown IDs.
+	paths := []struct{ method, path string }{
+		{"GET", "/api/v1/sync/unknown-id"},
+		{"POST", "/api/v1/sync/unknown-id"},
+		{"OPTIONS", "/api/v1/sync/unknown-id"},
+		{"GET", "/health"},
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest(p.method, p.path, nil)
+		req.Header.Set("Origin", "https://example.com")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		got := rr.Header().Get("Access-Control-Expose-Headers")
+		if !strings.Contains(got, "Date") {
+			t.Errorf("%s %s: Access-Control-Expose-Headers = %q, want it to include Date", p.method, p.path, got)
+		}
+	}
+}
